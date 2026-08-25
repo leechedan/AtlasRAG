@@ -1,0 +1,17 @@
+# Important Finding I8: neither Dockerfile nor admin_ui/Dockerfile COPY
+# these paths (Dockerfile only COPYs app/ and scripts/; admin_ui/Dockerfile
+# only COPYs admin_ui/app.py), so without this file the entire repo --
+# including the 6.3GB .venv, runtime data/, and full .git history -- was
+# sent to the Docker daemon as build context on every `docker compose
+# build`, a real contributor to a prior ~29-minute build.
+.venv
+data
+.git
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.superpowers
+tests
+docs
