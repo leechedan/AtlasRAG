@@ -683,9 +683,11 @@ class DenseSparseVector:
 
 class TextEmbedder:
     def __init__(self, model_name: str):
+        import torch
         from FlagEmbedding import BGEM3FlagModel
 
-        self._model = BGEM3FlagModel(model_name, use_fp16=True)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model = BGEM3FlagModel(model_name, use_fp16=True, device=device)
 
     def embed(self, texts: list[str]) -> list[DenseSparseVector]:
         output = self._model.encode(
@@ -702,6 +704,8 @@ class TextEmbedder:
 def get_text_embedder() -> TextEmbedder:
     return TextEmbedder(settings.text_embed_model)
 ```
+
+**这个函数最初的版本有个问题（code review 时发现）：** 没有显式传 `device="cuda"`，而是依赖 `BGEM3FlagModel` 内部的 `torch.cuda.is_available()` 自动探测。在这台机器上能跑是因为 GPU 确实在，但换到没装好 CUDA 的环境会不报错、不告警地静默退化到 CPU——而这条查询时向量化路径恰恰是对延迟敏感、必须走 GPU 的（架构设计的前提）。已经改成和 `scripts/check_gpu_env.py`、Task 6 的 Chinese-CLIP 封装一样的显式判断写法：`device = "cuda" if torch.cuda.is_available() else "cpu"`，再把 `device` 传给 `BGEM3FlagModel`。
 
 - [ ] **Step 4: 运行测试确认通过（需要 GPU 环境，即 Task 2 验证通过的机器上跑）**
 
