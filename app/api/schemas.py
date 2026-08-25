@@ -28,3 +28,23 @@ class UploadResponse(BaseModel):
 
 class DeleteResponse(BaseModel):
     status: str
+
+
+class IndexDirectoryRequest(BaseModel):
+    path: str
+    recursive: bool = True
+    watch: bool = False
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    separators: list[str] | None = None
+
+
+class JobStatusResponse(BaseModel):
+    total: int
+    processed: int
+    files: dict
+
+
+class CollectionsStatsResponse(BaseModel):
+    text_chunks_count: int
+    images_count: int
