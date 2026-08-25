@@ -159,6 +159,12 @@ def get_existing_content_hash(client: QdrantClient, doc_id: str) -> str | None:
     return None
 
 
+def find_image_by_doc_id(client: QdrantClient, doc_id: str) -> dict | None:
+    flt = models.Filter(must=[models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))])
+    points, _ = client.scroll(collection_name=IMAGE_COLLECTION, scroll_filter=flt, limit=1)
+    return points[0].payload if points else None
+
+
 def find_doc_id_by_source_path(client: QdrantClient, source_path: str) -> str | None:
     flt = models.Filter(must=[models.FieldCondition(key="source_path", match=models.MatchValue(value=source_path))])
     for collection in (TEXT_COLLECTION, IMAGE_COLLECTION):

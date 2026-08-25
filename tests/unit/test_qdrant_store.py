@@ -6,6 +6,7 @@ from app.store.qdrant_client import (
     ensure_collections,
     find_all_doc_ids_by_source_path,
     find_doc_id_by_source_path,
+    find_image_by_doc_id,
     get_existing_content_hash,
     get_qdrant_client,
     get_stats,
@@ -150,6 +151,25 @@ def test_list_chunks_for_document_returns_ordered_payloads():
 def test_list_chunks_for_document_empty_when_missing():
     client = make_client()
     assert list_chunks_for_document(client, "unknown-doc") == []
+
+
+def test_find_image_by_doc_id_returns_payload_after_upsert():
+    client = make_client()
+    record = ImageRecord(
+        doc_id="img-thumb", source_path="/x.png", thumbnail_path="/thumb/x.jpg",
+        width=50, height=60, has_ocr_text=False, content_hash="hx",
+    )
+    upsert_image(client, record, [0.2] * 512)
+
+    payload = find_image_by_doc_id(client, "img-thumb")
+
+    assert payload["thumbnail_path"] == "/thumb/x.jpg"
+    assert payload["doc_id"] == "img-thumb"
+
+
+def test_find_image_by_doc_id_none_when_missing():
+    client = make_client()
+    assert find_image_by_doc_id(client, "no-such-doc") is None
 
 
 def test_get_stats_reports_counts():

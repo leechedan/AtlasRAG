@@ -4,8 +4,10 @@ from unittest.mock import MagicMock, patch
 
 import fakeredis
 from fastapi.testclient import TestClient
+from PIL import Image
 from rq import Queue
 
+from app.api.deps import get_store_client
 from app.api.main import app
 from app.jobs.status import get_job_status
 
@@ -78,6 +80,38 @@ def test_upload_document_sets_job_timeout(mock_get_queue):
 
     _, kwargs = mock_queue.enqueue.call_args
     assert kwargs["job_timeout"] == 3600
+
+
+def test_get_document_thumbnail_returns_image_bytes(tmp_path, monkeypatch):
+    thumb_path = tmp_path / "thumb.jpg"
+    Image.new("RGB", (10, 10), color="red").save(thumb_path, "JPEG")
+
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr(
+        "app.api.routes.documents.find_image_by_doc_id",
+        lambda store, doc_id: {"doc_id": doc_id, "thumbnail_path": str(thumb_path)},
+    )
+
+    client = TestClient(app)
+    response = client.get("/documents/img1/thumbnail")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.content == thumb_path.read_bytes()
+
+
+def test_get_document_thumbnail_404_when_no_image_record(monkeypatch):
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr(
+        "app.api.routes.documents.find_image_by_doc_id", lambda store, doc_id: None
+    )
+
+    client = TestClient(app)
+    response = client.get("/documents/unknown/thumbnail")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 404
 
 
 @patch("app.api.routes.documents.get_queue")

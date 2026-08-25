@@ -1,9 +1,40 @@
+import io
 import os
 
 import gradio as gr
 import httpx
+from PIL import Image
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
+
+
+def _fetch_thumbnail(doc_id: str):
+    """Fetch a hit's thumbnail through the API's GET /documents/{doc_id}/thumbnail
+    (rather than reading source_path/thumbnail_path off the local filesystem):
+    the admin-ui container has no volume mount onto the api/worker containers'
+    /srv/data (see docker-compose.yml), so those paths never resolve here --
+    HTTP is the only channel this process has to the actual image bytes.
+    Returns None (silently skipped by callers) for hits with no image record
+    or a missing thumbnail file, so one broken hit doesn't blank the page.
+    """
+    try:
+        response = httpx.get(f"{API_BASE_URL}/documents/{doc_id}/thumbnail", timeout=10)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return None
+    return Image.open(io.BytesIO(response.content))
+
+
+def _thumbnails_for_hits(hits: list[dict]):
+    images = []
+    for hit in hits:
+        doc_id = hit["payload"].get("doc_id")
+        if not doc_id:
+            continue
+        image = _fetch_thumbnail(doc_id)
+        if image is not None:
+            images.append(image)
+    return images
 
 
 def do_search_text(query: str, top_k: int, search_images_too: bool):
@@ -14,8 +45,7 @@ def do_search_text(query: str, top_k: int, search_images_too: bool):
     response.raise_for_status()
     body = response.json()
     text_lines = [f"[{h['score']:.3f}] {h['payload'].get('text', '')[:200]}" for h in body["text_hits"]]
-    image_lines = [f"[{h['score']:.3f}] {h['payload'].get('source_path', '')}" for h in body["image_hits"]]
-    return "\n\n".join(text_lines) or "无结果", "\n".join(image_lines) or "无结果"
+    return "\n\n".join(text_lines) or "无结果", _thumbnails_for_hits(body["image_hits"])
 
 
 def do_search_image(image_path: str, top_k: int):
@@ -25,8 +55,7 @@ def do_search_image(image_path: str, top_k: int):
         )
     response.raise_for_status()
     body = response.json()
-    lines = [f"[{h['score']:.3f}] {h['payload'].get('source_path', '')}" for h in body["image_hits"]]
-    return "\n".join(lines) or "无结果"
+    return _thumbnails_for_hits(body["image_hits"])
 
 
 def do_upload(file_path: str, chunk_size: int, chunk_overlap: int, separators_text: str):
@@ -97,14 +126,14 @@ with gr.Blocks(title="检索服务管理界面") as demo:
         search_image_checkbox = gr.Checkbox(label="同时跨模态检索图片")
         search_button = gr.Button("检索")
         text_result = gr.Textbox(label="文字结果", lines=10)
-        image_result = gr.Textbox(label="图片结果", lines=5)
+        image_result = gr.Gallery(label="图片结果", columns=4)
         search_button.click(do_search_text, [query_input, top_k_input, search_image_checkbox], [text_result, image_result])
 
     with gr.Tab("图片检索"):
         query_image = gr.Image(type="filepath", label="上传查询图片")
         image_top_k = gr.Slider(1, 50, value=10, step=1, label="返回条数")
         image_search_button = gr.Button("检索")
-        image_search_result = gr.Textbox(label="结果", lines=10)
+        image_search_result = gr.Gallery(label="结果", columns=4)
         image_search_button.click(do_search_image, [query_image, image_top_k], image_search_result)
 
     with gr.Tab("上传文档"):

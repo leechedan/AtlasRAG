@@ -1,14 +1,17 @@
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
+from app.api.deps import get_store_client
 from app.api.schemas import DeleteResponse, UploadResponse
 from app.config import settings
 from app.ingest.hashing import upload_source_ref
 from app.jobs.queue import get_queue
 from app.jobs.status import create_job_status
 from app.jobs.tasks import delete_document_job, ingest_file_job
+from app.store.qdrant_client import find_image_by_doc_id
 
 router = APIRouter()
 
@@ -68,6 +71,25 @@ async def upload_document(
         job_timeout=3600,
     )
     return UploadResponse(job_id=job.id)
+
+
+@router.get("/documents/{doc_id}/thumbnail")
+def get_document_thumbnail(doc_id: str, store=Depends(get_store_client)):
+    # The Admin UI (and any other external caller) only ever talks to this
+    # service over HTTP -- it has no access to the api/worker containers'
+    # /srv/data filesystem (see docker-compose.yml: admin-ui has no volume
+    # mounts). Without this endpoint, an image record's thumbnail_path is a
+    # path that only resolves inside api/worker's own containers, so
+    # cross-modal text->image search hits have no way to actually be
+    # displayed anywhere outside those two containers -- the search finds
+    # the image, but nothing can render it.
+    image = find_image_by_doc_id(store, doc_id)
+    if image is None:
+        raise HTTPException(status_code=404, detail="image not found")
+    thumbnail_path = Path(image["thumbnail_path"])
+    if not thumbnail_path.exists():
+        raise HTTPException(status_code=404, detail="thumbnail file missing")
+    return FileResponse(thumbnail_path, media_type="image/jpeg")
 
 
 @router.delete("/documents/{doc_id}", response_model=DeleteResponse)
