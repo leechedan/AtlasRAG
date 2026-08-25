@@ -57,7 +57,10 @@ tests/unit/test_eval_retrieval_metrics.py
 
 ### 1. 结构违规率（structure_metrics.py）
 
-新增依赖 `markdown-it-py` + `mdit-py-plugins`（table 插件）做 AST 解析：
+新增依赖 `markdown-it-py` 做 AST 解析（表格支持是 `markdown-it-py` 核心
+自带的 `table` 规则，通过 `MarkdownIt("commonmark").enable("table")` 开启
+即可，不需要额外插件包，已用真实代码验证 `table_open`/`fence` token 的
+`.map` 覆盖整个块的起止行号，含分隔符行）：
 
 - 解析每个源文档，收集"受保护区间"：`fence`（代码块）、`table`（表格）
   的起止行号，转换为原文的字符偏移区间。
@@ -155,7 +158,6 @@ input-dir 下的 .md/.txt 文件
 `requirements.txt` 新增：
 ```
 markdown-it-py==3.0.0
-mdit-py-plugins==0.4.2
 ```
 
 ## 已知限制 / 后续扩展
