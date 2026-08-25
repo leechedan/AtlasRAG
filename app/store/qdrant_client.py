@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -62,8 +63,8 @@ class SearchHit:
 
 
 def _point_id(doc_id: str, chunk_index: int) -> str:
-    import hashlib
-
+    # ":" 分隔符是安全的：doc_id 始终来自 make_doc_id 生成的哈希值，不含冒号，
+    # 因此 doc_id:chunk_index 不会出现跨字段的歧义拼接。
     return hashlib.md5(f"{doc_id}:{chunk_index}".encode("utf-8")).hexdigest()
 
 

@@ -110,3 +110,26 @@ def test_get_stats_reports_counts():
     stats = get_stats(client)
     assert stats["text_chunks_count"] == 1
     assert stats["images_count"] == 0
+
+
+def test_upsert_text_chunk_overwrites_same_doc_id_and_chunk_index():
+    # 后续入库管线（Task 12+）依赖这个前提：同一个 (doc_id, chunk_index) 重复 upsert
+    # 要覆盖旧记录，不能产生重复的点——这是增量重新入库不产生脏数据的基础。
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    record_v1 = TextChunkRecord(
+        doc_id="dupdoc", chunk_index=0, text="old text", source_path="/f.txt",
+        file_type="txt", page=None, source_type="normal", content_hash="h-old",
+    )
+    upsert_text_chunk(client, record_v1, vec)
+
+    record_v2 = TextChunkRecord(
+        doc_id="dupdoc", chunk_index=0, text="new text", source_path="/f.txt",
+        file_type="txt", page=None, source_type="normal", content_hash="h-new",
+    )
+    upsert_text_chunk(client, record_v2, vec)
+
+    chunks = list_chunks_for_document(client, "dupdoc")
+    assert len(chunks) == 1
+    assert chunks[0]["text"] == "new text"
+    assert get_existing_content_hash(client, "dupdoc") == "h-new"
