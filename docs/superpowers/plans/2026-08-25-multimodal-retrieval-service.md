@@ -3053,6 +3053,40 @@ def test_index_directory_passes_custom_chunk_options(mock_get_queue):
     assert kwargs["kwargs"] == {"chunk_size": 800, "chunk_overlap": 100, "separators": ["\n\n", "---"]}
 ```
 
+**Step 3b 在实现审查中被进一步修正（Step 3c）：** Step 3b 的"先 enqueue（`job_id=None`）再回填 `job.args` 并 `job.save()`"方案本身没有实现错误，但 code review 独立评估后发现它遗留了一个比本节 Step 3 之前那条"注意"预估的更严重的竞态窗口——RQ worker 常态是阻塞式拉任务，几乎会在 `enqueue()` 返回、job 被推入 Redis 队列的瞬间就抢到任务，此时 `job.args` 还没来得及被回填 `job_id`；worker 侧会因为 `ingest_directory_job` 缺少第4个必需位置参数直接抛 `TypeError` 崩溃，且崩溃发生在函数体执行、`create_job_status` 被调用之前，导致该 job 的状态永远查不到（`GET /jobs/{job_id}` 永远返回 `{total:0, processed:0}`，和"还没开始"或"目录是空的"无法区分）——是静默卡死，不是明显报错。这与 Global Constraints 里"单文件失败不能拖垮整批、job 状态要记录逐文件成功/失败明细"的精神冲突。
+
+评审后与人类确认，改用 Task 17 `/documents/upload` 已经验证过、经审查通过的方案：enqueue **之前**用 `uuid.uuid4()` 预生成 `job_id`，同时作为 `ingest_directory_job` 的第4个位置参数、以及 RQ 的保留关键字参数 `job_id=` 传给 `queue.enqueue`，让 RQ 自己创建 `Job` 时就直接采用这个值——`job.id` 从第一次写入 Redis 起就是正确的，不存在"先创建、再修正"的窗口期。与 Task 17 的差异：这里的路由**不**在 enqueue 前调用 `create_job_status`（不同于上传接口已知 `total_files=1`），因为目录里有多少文件只有 worker 实际遍历目录后才知道——`ingest_directory_job`（Task 13）已经在函数体内部自己调用 `create_job_status(redis_conn, job_id, total_files=len(files))`，路由只需保证返回的 `job_id` 和 worker 最终用来记录状态的 key 是同一个值即可。
+
+```python
+# app/api/routes/directories.py
+import uuid
+
+from fastapi import APIRouter
+
+from app.api.schemas import IndexDirectoryRequest, UploadResponse
+from app.jobs.queue import get_queue
+from app.jobs.tasks import ingest_directory_job
+
+router = APIRouter()
+
+
+@router.post("/directories/index", response_model=UploadResponse)
+def index_directory(request: IndexDirectoryRequest):
+    queue = get_queue()
+    job_id = str(uuid.uuid4())
+    job = queue.enqueue(
+        ingest_directory_job,
+        request.path, request.recursive, request.watch, job_id,
+        chunk_size=request.chunk_size,
+        chunk_overlap=request.chunk_overlap,
+        separators=request.separators,
+        job_id=job_id,
+    )
+    return UploadResponse(job_id=job.id)
+```
+
+对应地，Step 3b 给出的两个 mock 测试改为断言新的调用形状（`ingest_directory_job` 收到的第4个位置参数与传给 `queue.enqueue` 的 `job_id=` 关键字参数自洽相等），并新增一个用 `fakeredis` + 真实同步 `rq.Queue(is_async=False)`（而非纯 mock）跑通整条路径的回归测试，断言 `get_job_status(redis_conn, response.json()["job_id"])` 能查到 worker 实际写入的状态——这个测试在还原 Step 3c 修复、退回 Step 3b 写法后被验证确实会失败（`total` 断言 `0 == 2`），证明它真的能捕获这个竞态回归。
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `cd retrieval-service && .venv/bin/pytest tests/unit/test_api_directories_jobs_collections.py -v`
