@@ -5,13 +5,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.api.deps import get_store_client
-from app.api.schemas import DeleteResponse, UploadResponse
+from app.api.schemas import DeleteResponse, DocumentSummaryOut, UploadResponse
 from app.config import settings
 from app.ingest.hashing import upload_source_ref
 from app.jobs.queue import get_queue
 from app.jobs.status import create_job_status
 from app.jobs.tasks import delete_document_job, ingest_file_job
-from app.store.qdrant_client import find_image_by_doc_id
+from app.store.qdrant_client import find_image_by_doc_id, list_all_documents
 
 router = APIRouter()
 
@@ -71,6 +71,11 @@ async def upload_document(
         job_timeout=3600,
     )
     return UploadResponse(job_id=job.id)
+
+
+@router.get("/documents", response_model=list[DocumentSummaryOut])
+def list_documents(store=Depends(get_store_client)):
+    return [DocumentSummaryOut(**d) for d in list_all_documents(store)]
 
 
 @router.get("/documents/{doc_id}/thumbnail")

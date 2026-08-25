@@ -212,3 +212,38 @@ def test_upload_document_sanitizes_path_traversal_filename(mock_get_queue, tmp_p
     resolved = Path(dest_path_arg).resolve()
     assert resolved.is_relative_to(settings.uploads_dir.resolve())
     assert Path(dest_path_arg).name == "passthrough"
+
+
+def test_list_documents_returns_aggregated_documents(monkeypatch):
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr(
+        "app.api.routes.documents.list_all_documents",
+        lambda store: [{
+            "doc_id": "d1", "source_path": "/a.txt", "filename": "a.txt", "file_type": "txt",
+            "origin": "watch", "chunk_count": 2, "source_types": ["normal"], "created_at": None,
+            "content_hash": "h1", "related_images": [],
+        }],
+    )
+
+    client = TestClient(app)
+    response = client.get("/documents")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["doc_id"] == "d1"
+    assert body[0]["chunk_count"] == 2
+    assert body[0]["related_images"] == []
+
+
+def test_list_documents_empty_when_no_documents(monkeypatch):
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr("app.api.routes.documents.list_all_documents", lambda store: [])
+
+    client = TestClient(app)
+    response = client.get("/documents")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == []

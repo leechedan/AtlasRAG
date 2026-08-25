@@ -9,6 +9,9 @@ class SearchTextRequest(BaseModel):
 
 class SearchHitOut(BaseModel):
     score: float
+    doc_id: str
+    chunk_index: int | None
+    chunk_id: str
     payload: dict
 
 
@@ -52,3 +55,39 @@ class JobStatusResponse(BaseModel):
 class CollectionsStatsResponse(BaseModel):
     text_chunks_count: int
     images_count: int
+
+
+class ImageSummaryOut(BaseModel):
+    doc_id: str
+    thumbnail_path: str
+    width: int
+    height: int
+
+
+class DocumentSummaryOut(BaseModel):
+    doc_id: str
+    source_path: str
+    filename: str
+    file_type: str
+    origin: str | None
+    chunk_count: int
+    source_types: list[str]
+    created_at: str | None
+    content_hash: str
+    related_images: list[ImageSummaryOut]
+
+
+class ChunkOut(BaseModel):
+    chunk_id: str
+    doc_id: str
+    chunk_index: int
+    text: str
+    page: int | None
+    source_type: str
+    source_path: str
+    file_type: str
+
+
+class ChunksPageOut(BaseModel):
+    chunks: list[ChunkOut]
+    next_cursor: str | None
