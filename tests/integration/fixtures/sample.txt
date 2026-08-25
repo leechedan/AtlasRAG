@@ -1,0 +1,2 @@
+DGX Spark 是 NVIDIA 推出的桌面级 AI 超级计算机，搭载 GB10 Grace Blackwell 超级芯片。
+本检索服务支持文字检索、图片检索、文档上传入库和目录批量入库。
