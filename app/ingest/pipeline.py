@@ -26,6 +26,7 @@ from app.store.qdrant_client import (
     ImageRecord,
     TextChunkRecord,
     delete_document,
+    find_all_doc_ids_by_source_path,
     get_default_client,
     get_existing_content_hash,
     upsert_image,
@@ -109,6 +110,29 @@ def _write_csv_chunks(client, doc_id: str, source_path: str, chunks: list[str], 
         )
         upsert_text_chunk(client, record, vector)
     return len(chunks)
+
+
+def _cleanup_stale_doc_ids(client, doc_id: str, source_path: str) -> None:
+    """Delete Qdrant points left behind by earlier ingests of the same
+    source_path under a different (older-content) doc_id.
+
+    doc_id is content-addressed (make_doc_id(source_ref, content_hash)), so
+    when a watched/re-uploaded file's content changes, the next ingest
+    computes a *new* doc_id -- the previous doc_id's points would otherwise
+    remain in Qdrant forever, growing the index unbounded and making search
+    return stale content indefinitely (Critical Finding 2).
+
+    Scope: only handles the plain source_path case (source_path == str(path)
+    for every top-level ingestion branch -- txt/md/csv/image, and a PDF's
+    own text chunks and OCR-image record). It deliberately does NOT handle
+    the composite per-page doc_id a scanned PDF page gets
+    (f"{doc_id}:page{N}", source_path f"{path}#page={N}", written by
+    _ingest_scanned_pdf_page) -- that is a separate, already-known,
+    out-of-scope limitation (see the matching note in
+    app/ingest/watcher.py's on_deleted handler)."""
+    for stale_doc_id in find_all_doc_ids_by_source_path(client, source_path):
+        if stale_doc_id != doc_id:
+            delete_document(client, stale_doc_id)
 
 
 def _save_thumbnail(image: Image.Image, doc_id: str) -> str:
@@ -211,6 +235,12 @@ def ingest_file(
         existing_hash = get_existing_content_hash(client, doc_id)
         if existing_hash == content_hash:
             return IngestResult(doc_id=doc_id, status="skipped_unchanged", chunks_written=0)
+
+        # About to write new chunks/records under `doc_id` -- clean up any
+        # older doc_id(s) left behind by a previous ingest of this same
+        # source_path (see _cleanup_stale_doc_ids). source_path is str(path)
+        # consistently across every branch below.
+        _cleanup_stale_doc_ids(client, doc_id, str(path))
 
         ext = path.suffix.lower()
         if ext in SUPPORTED_TEXT_EXTS:

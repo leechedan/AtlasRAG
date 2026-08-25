@@ -72,6 +72,36 @@ def test_ingest_unsupported_extension_fails_gracefully(tmp_path):
 
 
 @patch("app.ingest.pipeline.get_text_embedder")
+def test_ingest_editing_file_removes_stale_previous_version(mock_get_embedder, tmp_path):
+    """Regression test for Critical Finding 2: doc_id is content-addressed
+    (make_doc_id(source_ref, content_hash)), so when a watched/re-uploaded
+    file's content changes, the new content gets a *new* doc_id and the old
+    doc_id's points were never removed -- the index grew unbounded and
+    search kept returning stale content indefinitely. Ingesting v1, then v2
+    (different content, same path/source_ref), must leave only v2's chunks
+    in Qdrant."""
+    f = tmp_path / "note.txt"
+    f.write_text("version one content " * 50, encoding="utf-8")
+    mock_get_embedder.return_value.embed.side_effect = lambda texts: [
+        DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5}) for _ in texts
+    ]
+
+    client = make_client()
+    first = ingest_file(f, source_ref=str(f), client=client)
+    assert first.status == "ingested"
+
+    f.write_text("version two totally different content " * 50, encoding="utf-8")
+    second = ingest_file(f, source_ref=str(f), client=client)
+    assert second.status == "ingested"
+    assert second.doc_id != first.doc_id
+
+    assert list_chunks_for_document(client, first.doc_id) == []
+    stored = list_chunks_for_document(client, second.doc_id)
+    assert len(stored) == second.chunks_written
+    assert all("version two" in c["text"] for c in stored)
+
+
+@patch("app.ingest.pipeline.get_text_embedder")
 def test_ingest_honors_custom_chunk_options(mock_get_embedder, tmp_path):
     from app.ingest.pipeline import ChunkOptions
 

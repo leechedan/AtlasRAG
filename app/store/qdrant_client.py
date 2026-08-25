@@ -168,6 +168,29 @@ def find_doc_id_by_source_path(client: QdrantClient, source_path: str) -> str | 
     return None
 
 
+def find_all_doc_ids_by_source_path(client: QdrantClient, source_path: str) -> set[str]:
+    """Like find_doc_id_by_source_path, but returns every distinct doc_id
+    found under source_path instead of just the first match. doc_id is
+    content-addressed (make_doc_id(source_ref, content_hash)), so editing an
+    already-indexed file's content and re-ingesting it produces a *new*
+    doc_id under the same source_path -- the old doc_id's points are left
+    behind unless something looks them up and deletes them. Unlike
+    find_doc_id_by_source_path's `limit=1` scroll (which would only ever
+    surface one of possibly several accumulated stale doc_ids), this
+    paginates through every match, following the same pattern as
+    list_chunks_for_document."""
+    flt = models.Filter(must=[models.FieldCondition(key="source_path", match=models.MatchValue(value=source_path))])
+    doc_ids: set[str] = set()
+    for collection in (TEXT_COLLECTION, IMAGE_COLLECTION):
+        offset = None
+        while True:
+            points, offset = client.scroll(collection_name=collection, scroll_filter=flt, limit=100, offset=offset)
+            doc_ids.update(p.payload["doc_id"] for p in points)
+            if offset is None:
+                break
+    return doc_ids
+
+
 def list_chunks_for_document(client: QdrantClient, doc_id: str) -> list[dict]:
     flt = models.Filter(must=[models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))])
     payloads: list[dict] = []

@@ -4,6 +4,7 @@ from app.store.qdrant_client import (
     TextChunkRecord,
     delete_document,
     ensure_collections,
+    find_all_doc_ids_by_source_path,
     find_doc_id_by_source_path,
     get_existing_content_hash,
     get_qdrant_client,
@@ -81,6 +82,41 @@ def test_find_doc_id_by_source_path_returns_doc_id_after_upsert():
     )
     upsert_text_chunk(client, record, vec)
     assert find_doc_id_by_source_path(client, "/g.txt") == "doc6"
+
+
+def test_find_all_doc_ids_by_source_path_empty_when_missing():
+    client = make_client()
+    assert find_all_doc_ids_by_source_path(client, "/no/such/path.txt") == set()
+
+
+def test_find_all_doc_ids_by_source_path_returns_every_stale_and_current_doc_id():
+    # Regression coverage for Critical Finding 2: find_doc_id_by_source_path
+    # uses limit=1, so it only ever sees one doc_id for a given source_path
+    # even when several content-addressed doc_ids have accumulated under it
+    # (e.g. from repeatedly editing and re-ingesting the same file path).
+    # find_all_doc_ids_by_source_path must paginate through every match and
+    # return the full set.
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    for doc_id in ("doc-v1", "doc-v2", "doc-v3"):
+        record = TextChunkRecord(
+            doc_id=doc_id, chunk_index=0, text=f"text for {doc_id}", source_path="/h.txt",
+            file_type="txt", page=None, source_type="normal", content_hash=f"hash-{doc_id}",
+        )
+        upsert_text_chunk(client, record, vec)
+    # Also cover the image collection.
+    upsert_image(
+        client,
+        ImageRecord(
+            doc_id="doc-v4-image", source_path="/h.txt", thumbnail_path="/thumb/h.jpg",
+            width=10, height=10, has_ocr_text=False, content_hash="hash-doc-v4-image",
+        ),
+        [0.2] * 512,
+    )
+
+    result = find_all_doc_ids_by_source_path(client, "/h.txt")
+
+    assert result == {"doc-v1", "doc-v2", "doc-v3", "doc-v4-image"}
 
 
 def test_delete_document_removes_chunks():
