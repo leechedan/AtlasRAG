@@ -294,6 +294,17 @@ def list_all_documents(client: QdrantClient) -> list[dict]:
     return sorted(documents, key=lambda d: d["doc_id"])
 
 
+def scroll_chunks(client: QdrantClient, cursor: str | None = None, limit: int = 50) -> tuple[list[dict], str | None]:
+    points, next_offset = client.scroll(collection_name=TEXT_COLLECTION, limit=limit, offset=cursor)
+    chunks = []
+    for p in points:
+        payload = dict(p.payload)
+        payload["chunk_id"] = compute_chunk_id(payload["doc_id"], payload["chunk_index"])
+        chunks.append(payload)
+    next_cursor = str(next_offset) if next_offset is not None else None
+    return chunks, next_cursor
+
+
 def get_stats(client: QdrantClient) -> dict:
     text_info = client.get_collection(TEXT_COLLECTION)
     image_info = client.get_collection(IMAGE_COLLECTION)

@@ -12,6 +12,7 @@ from app.store.qdrant_client import (
     get_stats,
     list_all_documents,
     list_chunks_for_document,
+    scroll_chunks,
     search_images,
     search_text_hybrid,
     upsert_image,
@@ -359,3 +360,39 @@ def test_list_all_documents_lists_orphan_image_as_its_own_document():
 def test_list_all_documents_empty_collections_returns_empty_list():
     client = make_client()
     assert list_all_documents(client) == []
+
+
+def test_scroll_chunks_paginates_through_all_chunks_without_duplicates():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    for idx in range(5):
+        upsert_text_chunk(
+            client,
+            TextChunkRecord(
+                doc_id="doc-scroll", chunk_index=idx, text=f"c{idx}", source_path="/s.txt",
+                file_type="txt", page=None, source_type="normal", content_hash="hs",
+            ),
+            vec,
+        )
+
+    seen_chunk_ids = set()
+    cursor = None
+    pages = 0
+    while True:
+        chunks, cursor = scroll_chunks(client, cursor=cursor, limit=2)
+        for c in chunks:
+            assert c["chunk_id"]
+            seen_chunk_ids.add(c["chunk_id"])
+        pages += 1
+        if cursor is None:
+            break
+        assert pages < 10  # safety net against an infinite loop bug
+
+    assert len(seen_chunk_ids) == 5
+
+
+def test_scroll_chunks_empty_collection_returns_empty_page():
+    client = make_client()
+    chunks, cursor = scroll_chunks(client)
+    assert chunks == []
+    assert cursor is None
