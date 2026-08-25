@@ -59,3 +59,14 @@ def test_chunk_csv_rows_splits_early_when_row_text_is_huge():
     assert all(len(c) <= 1000 for c in chunks)
     assert "p0" in chunks[0]
     assert "p1" in chunks[1] and "p2" in chunks[1]
+
+
+def test_chunk_csv_rows_splits_single_oversized_row():
+    header = ["name", "bio"]
+    rows = [{"name": "p0", "bio": "z" * 3000}]
+
+    chunks = chunk_csv_rows(rows, header, rows_per_chunk=20, max_chars=1000)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 1000 for c in chunks)
+    assert sum(c.count("z") for c in chunks) == 3000

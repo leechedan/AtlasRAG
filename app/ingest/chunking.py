@@ -1,5 +1,3 @@
-import re
-
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.config import settings
@@ -61,6 +59,16 @@ def chunk_csv_rows(
 
     for row in rows:
         line = ", ".join(f"{k}={row.get(k, '')}" for k in header)
+        single_row_len = len(header_line) + 1 + len(line)
+
+        if single_row_len > max_chars:
+            flush()
+            current_lines = []
+            piece_budget = max(max_chars - len(header_line) - 1, 1)
+            for piece in chunk_text(line, chunk_size=piece_budget, chunk_overlap=0, separators=[""]):
+                chunks.append(header_line + "\n" + piece)
+            continue
+
         candidate_len = len(header_line) + 1 + sum(len(l) + 1 for l in current_lines) + len(line) + 1
 
         if current_lines and (len(current_lines) >= rows_per_chunk or candidate_len > max_chars):
