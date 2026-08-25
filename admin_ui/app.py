@@ -143,10 +143,15 @@ def do_select_document(documents_table, evt: gr.SelectData):
 
 def do_delete_document(doc_id: str | None):
     if not doc_id:
-        return "请先在文档列表中选择一行", gr.update(), gr.update()
+        return "请先在文档列表中选择一行", gr.update(), gr.update(), gr.update()
     response = httpx.delete(f"{API_BASE_URL}/documents/{doc_id}", timeout=30)
     response.raise_for_status()
-    return f"已删除文档 {doc_id}", do_list_documents(), []
+    return (
+        f"已提交删除任务 {doc_id}，处理是异步的，请稍后点击「刷新文档列表」确认",
+        gr.update(),
+        [],
+        None,
+    )
 
 
 def do_list_jobs():
@@ -166,10 +171,10 @@ def do_select_job(jobs_table, evt: gr.SelectData):
 
 def do_delete_job(job_id: str | None):
     if not job_id:
-        return "请先在任务记录列表中选择一行", gr.update()
+        return "请先在任务记录列表中选择一行", gr.update(), gr.update()
     response = httpx.delete(f"{API_BASE_URL}/jobs/{job_id}", timeout=30)
     response.raise_for_status()
-    return f"已删除任务记录 {job_id}", do_list_jobs()
+    return f"已删除任务记录 {job_id}", do_list_jobs(), None
 
 
 with gr.Blocks(title="检索服务管理界面") as demo:
@@ -252,7 +257,7 @@ with gr.Blocks(title="检索服务管理界面") as demo:
         )
         refresh_docs_button.click(do_list_documents, None, documents_table)
         documents_table.select(do_select_document, documents_table, [chunks_table, selected_doc_id])
-        delete_doc_button.click(do_delete_document, selected_doc_id, [delete_doc_result, documents_table, chunks_table])
+        delete_doc_button.click(do_delete_document, selected_doc_id, [delete_doc_result, documents_table, chunks_table, selected_doc_id])
         demo.load(do_list_documents, None, documents_table)
 
     with gr.Tab("任务记录"):
@@ -268,7 +273,7 @@ with gr.Blocks(title="检索服务管理界面") as demo:
         delete_job_result = gr.Textbox(label="删除结果")
         refresh_jobs_button.click(do_list_jobs, None, jobs_table)
         jobs_table.select(do_select_job, jobs_table, selected_job_id)
-        delete_job_button.click(do_delete_job, selected_job_id, [delete_job_result, jobs_table])
+        delete_job_button.click(do_delete_job, selected_job_id, [delete_job_result, jobs_table, selected_job_id])
         demo.load(do_list_jobs, None, jobs_table)
 
 

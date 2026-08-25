@@ -53,3 +53,22 @@ def test_delete_job_status_removes_both_keys():
 def test_delete_job_status_is_a_noop_for_unknown_job_id():
     redis_conn = make_redis()
     delete_job_status(redis_conn, "does-not-exist")  # 不应抛异常
+
+
+def test_list_all_job_statuses_includes_jobs_with_only_files_key():
+    """A job whose :total key was deleted (e.g. by delete_job_status while the
+    job was still running, and the job then wrote another file result) must
+    still show up so it can be found and cleaned up again -- otherwise the
+    cleanup tool itself leaks an invisible, undeletable key."""
+    redis_conn = make_redis()
+    update_job_file_result(redis_conn, "job-orphan", "/a.txt", "ingested")
+
+    summaries = {s["job_id"]: s for s in list_all_job_statuses(redis_conn)}
+
+    assert summaries["job-orphan"] == {
+        "job_id": "job-orphan",
+        "total": 0,
+        "processed": 1,
+        "success_count": 1,
+        "failed_count": 0,
+    }

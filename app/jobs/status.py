@@ -52,10 +52,13 @@ def get_job_status(redis_conn, job_id: str) -> dict:
 
 
 def list_all_job_statuses(redis_conn) -> list[dict]:
-    job_ids = []
+    job_ids = set()
     for raw_key in redis_conn.scan_iter(f"{JOB_KEY_PREFIX}*:total"):
         key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
-        job_ids.append(key[len(JOB_KEY_PREFIX) : -len(":total")])
+        job_ids.add(key[len(JOB_KEY_PREFIX) : -len(":total")])
+    for raw_key in redis_conn.scan_iter(f"{JOB_KEY_PREFIX}*:files"):
+        key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+        job_ids.add(key[len(JOB_KEY_PREFIX) : -len(":files")])
 
     summaries = []
     for job_id in sorted(job_ids):

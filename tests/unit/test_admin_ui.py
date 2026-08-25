@@ -1,7 +1,7 @@
 import httpx
 import respx
 
-from admin_ui.app import do_delete_job, do_list_jobs, do_select_job
+from admin_ui.app import do_delete_document, do_delete_job, do_list_jobs, do_select_document, do_select_job
 
 
 class FakeSelectData:
@@ -36,19 +36,19 @@ def test_do_delete_job_calls_api_and_refreshes_list():
     respx.delete("http://localhost:8000/jobs/job-1").mock(return_value=httpx.Response(204))
     respx.get("http://localhost:8000/jobs").mock(return_value=httpx.Response(200, json=[]))
 
-    message, rows = do_delete_job("job-1")
+    message, rows, cleared_state = do_delete_job("job-1")
 
     assert "job-1" in message
     assert rows == []
+    assert cleared_state is None
 
 
+@respx.mock
 def test_do_delete_job_without_selection_does_not_call_api():
-    message, rows = do_delete_job(None)
+    message, *_ = do_delete_job(None)
 
     assert "选择" in message
-
-
-from admin_ui.app import do_delete_document, do_select_document
+    assert not respx.calls
 
 
 @respx.mock
@@ -83,16 +83,17 @@ def test_do_delete_document_calls_api_and_refreshes_list():
     respx.delete("http://localhost:8000/documents/doc-1").mock(
         return_value=httpx.Response(200, json={"status": "deleted"})
     )
-    respx.get("http://localhost:8000/documents").mock(return_value=httpx.Response(200, json=[]))
 
-    message, table, chunks = do_delete_document("doc-1")
+    message, table, chunks, cleared_state = do_delete_document("doc-1")
 
     assert "doc-1" in message
-    assert table == []
     assert chunks == []
+    assert cleared_state is None
 
 
+@respx.mock
 def test_do_delete_document_without_selection_does_not_call_api():
-    message, table, chunks = do_delete_document(None)
+    message, *_ = do_delete_document(None)
 
     assert "选择" in message
+    assert not respx.calls
