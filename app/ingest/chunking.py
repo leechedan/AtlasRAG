@@ -3,6 +3,34 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from app.config import settings
 
 
+def _enforce_chunk_size_cap(
+    chunks: list[str], chunk_size: int, chunk_overlap: int
+) -> list[str]:
+    """Safety net guaranteeing len(chunk) <= chunk_size for every returned
+    chunk, regardless of which internal path (the custom-separator
+    recursive branch, or the default RecursiveCharacterTextSplitter
+    branch) produced it (Important Finding I2). ``separators=[""]`` means
+    "split at any character boundary", so this is guaranteed to be able to
+    split any oversized chunk further -- unlike a custom separator list,
+    which may not appear in the text at all.
+    """
+    if all(len(c) <= chunk_size for c in chunks):
+        return chunks
+
+    hard_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=[""],
+    )
+    result: list[str] = []
+    for c in chunks:
+        if len(c) <= chunk_size:
+            result.append(c)
+        else:
+            result.extend(hard_splitter.split_text(c))
+    return result
+
+
 def chunk_text(
     text: str,
     chunk_size: int | None = None,
@@ -34,7 +62,7 @@ def chunk_text(
                             separators=[s for s in separators if s != sep]
                         )
                         result.extend(sub_chunks)
-                return result
+                return _enforce_chunk_size_cap(result, chunk_size_val, chunk_overlap_val)
 
     # Use RecursiveCharacterTextSplitter for default behavior
     splitter = RecursiveCharacterTextSplitter(
@@ -42,7 +70,9 @@ def chunk_text(
         chunk_overlap=chunk_overlap_val,
         separators=separators_val,
     )
-    return splitter.split_text(text)
+    return _enforce_chunk_size_cap(
+        splitter.split_text(text), chunk_size_val, chunk_overlap_val
+    )
 
 
 def chunk_csv_rows(
