@@ -9,6 +9,7 @@ from app.api.schemas import (
     RemoveWatchRequest,
     UploadResponse,
 )
+from app.config import settings
 from app.ingest.watcher import unregister_watch
 from app.jobs.queue import get_queue
 from app.jobs.tasks import ingest_directory_job
@@ -24,6 +25,18 @@ def index_directory(request: IndexDirectoryRequest):
     # on start (Critical Finding 3).
     if not Path(request.path).is_dir():
         raise HTTPException(status_code=400, detail=f"not a directory: {request.path}")
+
+    # This service is explicitly no-auth (intranet-only v1, per the design
+    # spec). Without this allowlist, an unauthenticated request with e.g.
+    # {"path": "/", "recursive": true} would make the worker walk and index
+    # the entire filesystem it can see (Important Finding I11).
+    resolved_path = Path(request.path).resolve()
+    allowed_roots = [root.resolve() for root in settings.effective_allowed_index_roots]
+    if not any(resolved_path.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(
+            status_code=403,
+            detail=f"path not under an allowed index root: {request.path}",
+        )
 
     queue = get_queue()
     job_id = str(uuid.uuid4())

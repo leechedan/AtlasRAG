@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     clip_model_name: str = "OFA-Sys/chinese-clip-vit-base-patch16"
     ocr_lang: str = "ch"
     watch_reconcile_interval_seconds: int = 3600
+    allowed_index_roots: list[Path] = []
 
     @property
     def uploads_dir(self) -> Path:
@@ -25,6 +26,18 @@ class Settings(BaseSettings):
     @property
     def thumbnails_dir(self) -> Path:
         return self.data_dir / "thumbnails"
+
+    @property
+    def effective_allowed_index_roots(self) -> list[Path]:
+        """Directory roots POST /directories/index is allowed to index
+        under (Important Finding I11). This service is explicitly no-auth
+        (intranet-only v1), so without this restriction an unauthenticated
+        request with e.g. {"path": "/", "recursive": true} would walk and
+        index the entire filesystem the worker can see. Defaults to just
+        the app's own data_dir unless explicitly configured otherwise via
+        ALLOWED_INDEX_ROOTS.
+        """
+        return self.allowed_index_roots or [self.data_dir]
 
 
 settings = Settings()

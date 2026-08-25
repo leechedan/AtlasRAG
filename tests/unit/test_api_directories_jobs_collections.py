@@ -10,7 +10,11 @@ from app.jobs.status import get_job_status
 
 
 @patch("app.api.routes.directories.get_queue")
-def test_index_directory_enqueues_job(mock_get_queue, tmp_path):
+def test_index_directory_enqueues_job(mock_get_queue, tmp_path, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "allowed_index_roots", [tmp_path])
+
     mock_job = MagicMock(id="rq-dir-job")
     mock_queue = MagicMock()
     mock_queue.enqueue.return_value = mock_job
@@ -34,7 +38,11 @@ def test_index_directory_enqueues_job(mock_get_queue, tmp_path):
 
 
 @patch("app.api.routes.directories.get_queue")
-def test_index_directory_passes_custom_chunk_options(mock_get_queue, tmp_path):
+def test_index_directory_passes_custom_chunk_options(mock_get_queue, tmp_path, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "allowed_index_roots", [tmp_path])
+
     mock_job = MagicMock(id="rq-dir-job-2")
     mock_queue = MagicMock()
     mock_queue.enqueue.return_value = mock_job
@@ -80,6 +88,58 @@ def test_index_directory_rejects_nonexistent_path(mock_get_queue, tmp_path):
 
 
 @patch("app.api.routes.directories.get_queue")
+def test_index_directory_rejects_path_outside_allowed_roots(mock_get_queue, tmp_path, monkeypatch):
+    """Regression test for Important Finding I11: this service is
+    explicitly no-auth (intranet-only v1), so without a path allowlist an
+    unauthenticated request could make the worker walk and index any
+    directory the worker process can see. A real, existing directory
+    outside settings.effective_allowed_index_roots must be rejected with
+    403 before anything is enqueued."""
+    from app.config import settings
+
+    allowed_root = tmp_path / "allowed"
+    allowed_root.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    monkeypatch.setattr(settings, "allowed_index_roots", [allowed_root])
+
+    mock_get_queue.return_value = MagicMock()
+
+    client = TestClient(app)
+    response = client.post(
+        "/directories/index", json={"path": str(outside_dir), "recursive": True, "watch": False}
+    )
+
+    assert response.status_code == 403
+    mock_get_queue.return_value.enqueue.assert_not_called()
+
+
+@patch("app.api.routes.directories.get_queue")
+def test_index_directory_allows_path_inside_allowed_root(mock_get_queue, tmp_path, monkeypatch):
+    """Counterpart to the rejection test above: a real directory under a
+    configured allowed root must still succeed as before."""
+    from app.config import settings
+
+    allowed_root = tmp_path / "allowed"
+    inside_dir = allowed_root / "sub"
+    inside_dir.mkdir(parents=True)
+    monkeypatch.setattr(settings, "allowed_index_roots", [allowed_root])
+
+    mock_job = MagicMock(id="rq-dir-job-allowed")
+    mock_queue = MagicMock()
+    mock_queue.enqueue.return_value = mock_job
+    mock_get_queue.return_value = mock_queue
+
+    client = TestClient(app)
+    response = client.post(
+        "/directories/index", json={"path": str(inside_dir), "recursive": True, "watch": False}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] == "rq-dir-job-allowed"
+
+
+@patch("app.api.routes.directories.get_queue")
 def test_index_directory_rejects_path_that_is_a_file(mock_get_queue, tmp_path):
     file_path = tmp_path / "not_a_dir.txt"
     file_path.write_text("x")
@@ -95,7 +155,7 @@ def test_index_directory_rejects_path_that_is_a_file(mock_get_queue, tmp_path):
 
 
 @patch("app.api.routes.directories.get_queue")
-def test_index_directory_sets_unlimited_job_timeout(mock_get_queue, tmp_path):
+def test_index_directory_sets_unlimited_job_timeout(mock_get_queue, tmp_path, monkeypatch):
     """Regression test for Critical Finding 1: ingest_directory_job processes
     an entire directory inside one job. Without an explicit job_timeout,
     RQ's default of 180s (rq.queue.Queue.DEFAULT_TIMEOUT) applies, so any
@@ -106,6 +166,10 @@ def test_index_directory_sets_unlimited_job_timeout(mock_get_queue, tmp_path):
     death-penalty/heartbeat code paths special-case job.timeout == -1
     throughout rq/worker.py) since a directory can contain arbitrarily many
     files."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "allowed_index_roots", [tmp_path])
+
     mock_job = MagicMock(id="rq-dir-job-timeout")
     mock_queue = MagicMock()
     mock_queue.enqueue.return_value = mock_job
@@ -160,7 +224,7 @@ def test_delete_watch_returns_404_when_not_registered(mock_get_queue):
 
 
 @patch("app.jobs.tasks.ingest_file")
-def test_index_directory_returned_job_id_matches_real_status_key(mock_ingest_file, tmp_path):
+def test_index_directory_returned_job_id_matches_real_status_key(mock_ingest_file, tmp_path, monkeypatch):
     """Regression test for the enqueue/save race: the previous implementation
     enqueued the job with job_id=None first (immediately visible to any idle
     worker), then patched job.id onto job.args and called job.save() to fix
@@ -176,7 +240,10 @@ def test_index_directory_returned_job_id_matches_real_status_key(mock_ingest_fil
     real key ingest_directory_job's own create_job_status/
     update_job_file_result calls wrote status under.
     """
+    from app.config import settings
     from app.ingest.pipeline import IngestResult
+
+    monkeypatch.setattr(settings, "allowed_index_roots", [tmp_path])
 
     mock_ingest_file.return_value = IngestResult(doc_id="d1", status="ingested", chunks_written=1)
     (tmp_path / "a.txt").write_text("x")
