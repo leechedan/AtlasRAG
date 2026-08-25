@@ -9,6 +9,7 @@ via `IngestResult(status="failed", ...)` instead.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image
@@ -62,6 +63,8 @@ def _write_text_chunks(
     source_type: str,
     content_hash: str,
     chunk_options: ChunkOptions,
+    origin: str,
+    created_at: str,
     start_index: int = 0,
 ) -> int:
     """Chunk, embed, and upsert one text blob (a whole file, or a single PDF
@@ -88,12 +91,16 @@ def _write_text_chunks(
             page=page_number,
             source_type=source_type,
             content_hash=content_hash,
+            origin=origin,
+            created_at=created_at,
         )
         upsert_text_chunk(client, record, vector)
     return len(chunks)
 
 
-def _write_csv_chunks(client, doc_id: str, source_path: str, chunks: list[str], content_hash: str) -> int:
+def _write_csv_chunks(
+    client, doc_id: str, source_path: str, chunks: list[str], content_hash: str, origin: str, created_at: str
+) -> int:
     if not chunks:
         return 0
     vectors = get_text_embedder().embed(chunks)
@@ -107,6 +114,8 @@ def _write_csv_chunks(client, doc_id: str, source_path: str, chunks: list[str], 
             page=None,
             source_type="normal",
             content_hash=content_hash,
+            origin=origin,
+            created_at=created_at,
         )
         upsert_text_chunk(client, record, vector)
     return len(chunks)
@@ -143,7 +152,9 @@ def _save_thumbnail(image: Image.Image, doc_id: str) -> str:
     return str(thumbnail_path)
 
 
-def _ingest_image_file(client, doc_id: str, path: Path, content_hash: str, chunk_options: ChunkOptions) -> int:
+def _ingest_image_file(
+    client, doc_id: str, path: Path, content_hash: str, chunk_options: ChunkOptions, origin: str, created_at: str
+) -> int:
     image = Image.open(path).convert("RGB")
     parsed = parse_image(image, doc_id)
     upsert_image(
@@ -156,6 +167,8 @@ def _ingest_image_file(client, doc_id: str, path: Path, content_hash: str, chunk
             height=parsed.height,
             has_ocr_text=bool(parsed.ocr_text),
             content_hash=content_hash,
+            origin=origin,
+            created_at=created_at,
         ),
         parsed.clip_vector,
     )
@@ -171,11 +184,15 @@ def _ingest_image_file(client, doc_id: str, path: Path, content_hash: str, chunk
             "ocr_image",
             content_hash,
             chunk_options,
+            origin=origin,
+            created_at=created_at,
         )
     return written
 
 
-def _ingest_scanned_pdf_page(client, doc_id: str, path: Path, page: ParsedPdfPage, content_hash: str) -> None:
+def _ingest_scanned_pdf_page(
+    client, doc_id: str, path: Path, page: ParsedPdfPage, content_hash: str, origin: str, created_at: str
+) -> None:
     """Write the scanned page's own bitmap as an image record (with a CLIP
     vector and thumbnail), independent of the OCR text chunks written for
     the same page by the caller. Deliberately does not call parse_image()
@@ -194,12 +211,16 @@ def _ingest_scanned_pdf_page(client, doc_id: str, path: Path, page: ParsedPdfPag
             height=page.page_image.height,
             has_ocr_text=bool(page.text),
             content_hash=content_hash,
+            origin=origin,
+            created_at=created_at,
         ),
         clip_vector,
     )
 
 
-def _ingest_pdf_file(client, doc_id: str, path: Path, content_hash: str, chunk_options: ChunkOptions) -> int:
+def _ingest_pdf_file(
+    client, doc_id: str, path: Path, content_hash: str, chunk_options: ChunkOptions, origin: str, created_at: str
+) -> int:
     pages = parse_pdf(path)
     written = 0
     for page in pages:
@@ -214,10 +235,12 @@ def _ingest_pdf_file(client, doc_id: str, path: Path, content_hash: str, chunk_o
             source_type,
             content_hash,
             chunk_options,
+            origin=origin,
+            created_at=created_at,
             start_index=written,
         )
         if page.is_scanned and page.page_image is not None:
-            _ingest_scanned_pdf_page(client, doc_id, path, page, content_hash)
+            _ingest_scanned_pdf_page(client, doc_id, path, page, content_hash, origin=origin, created_at=created_at)
     return written
 
 
@@ -227,6 +250,8 @@ def ingest_file(
     client = client or get_default_client()
     chunk_options = chunk_options or ChunkOptions()
     doc_id: str | None = None
+    origin = "upload" if source_ref.startswith("upload:") else "watch"
+    created_at = datetime.now(timezone.utc).isoformat()
 
     try:
         content_hash = sha256_file(path)
@@ -246,16 +271,17 @@ def ingest_file(
         if ext in SUPPORTED_TEXT_EXTS:
             text = parse_text_file(path)
             written = _write_text_chunks(
-                client, doc_id, str(path), ext.lstrip("."), text, None, "normal", content_hash, chunk_options
+                client, doc_id, str(path), ext.lstrip("."), text, None, "normal", content_hash, chunk_options,
+                origin=origin, created_at=created_at,
             )
         elif ext == ".csv":
             rows, header = parse_csv_file(path)
             chunks = chunk_csv_rows(rows, header, max_chars=chunk_options.chunk_size)
-            written = _write_csv_chunks(client, doc_id, str(path), chunks, content_hash)
+            written = _write_csv_chunks(client, doc_id, str(path), chunks, content_hash, origin=origin, created_at=created_at)
         elif ext in SUPPORTED_IMAGE_EXTS:
-            written = _ingest_image_file(client, doc_id, path, content_hash, chunk_options)
+            written = _ingest_image_file(client, doc_id, path, content_hash, chunk_options, origin=origin, created_at=created_at)
         elif ext == ".pdf":
-            written = _ingest_pdf_file(client, doc_id, path, content_hash, chunk_options)
+            written = _ingest_pdf_file(client, doc_id, path, content_hash, chunk_options, origin=origin, created_at=created_at)
         else:
             raise ValueError(f"unsupported file extension: {ext}")
 

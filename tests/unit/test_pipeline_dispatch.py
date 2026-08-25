@@ -165,3 +165,34 @@ def test_ingest_pdf_multipage_chunks_do_not_collide(mock_get_embedder, tmp_path)
 
     pages_represented = {p["page"] for p in stored}
     assert pages_represented == {1, 2, 3}
+
+
+@patch("app.ingest.pipeline.get_text_embedder")
+def test_ingest_upload_source_ref_sets_origin_upload(mock_get_embedder, tmp_path):
+    f = tmp_path / "note.txt"
+    f.write_text("hello", encoding="utf-8")
+    mock_get_embedder.return_value.embed.side_effect = lambda texts: [
+        DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5}) for _ in texts
+    ]
+
+    client = make_client()
+    result = ingest_file(f, source_ref=f"upload:2026-08-25T00:00:00+00:00:{f.name}", client=client)
+
+    chunks = list_chunks_for_document(client, result.doc_id)
+    assert chunks[0]["origin"] == "upload"
+    assert chunks[0]["created_at"] is not None
+
+
+@patch("app.ingest.pipeline.get_text_embedder")
+def test_ingest_plain_path_source_ref_sets_origin_watch(mock_get_embedder, tmp_path):
+    f = tmp_path / "note.txt"
+    f.write_text("hello", encoding="utf-8")
+    mock_get_embedder.return_value.embed.side_effect = lambda texts: [
+        DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5}) for _ in texts
+    ]
+
+    client = make_client()
+    result = ingest_file(f, source_ref=str(f), client=client)
+
+    chunks = list_chunks_for_document(client, result.doc_id)
+    assert chunks[0]["origin"] == "watch"
