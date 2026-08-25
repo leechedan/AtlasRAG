@@ -25,6 +25,7 @@ services:
       QDRANT_PORT: 6333
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /srv/data
+      HF_HOME: /srv/data/hf_cache
     volumes:
       - ./data:/srv/data
     depends_on:
@@ -49,6 +50,7 @@ services:
       QDRANT_PORT: 6333
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /srv/data
+      HF_HOME: /srv/data/hf_cache
     volumes:
       - ./data:/srv/data
     depends_on:
