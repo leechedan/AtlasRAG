@@ -1493,7 +1493,11 @@ def make_test_pdf(path):
     doc = fitz.open()
 
     page1 = doc.new_page()
-    page1.insert_text((72, 72), "这是可提取的文字层")
+    # 默认字体(helv)没有中文字形，字符会被渲染成占位符而不是真实文字；
+    # 句子长度也要盖过 parse_pdf 默认的 text_threshold=20，所以用内置中文字体、加长句子
+    page1.insert_text(
+        (72, 72), "这是可提取的文字层，用于测试PDF解析器的文字提取功能。", fontname="china-s"
+    )
 
     page2 = doc.new_page()
     img = Image.new("RGB", (400, 200), color="white")
