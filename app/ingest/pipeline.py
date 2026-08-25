@@ -25,6 +25,7 @@ from app.models.embeddings import get_text_embedder
 from app.store.qdrant_client import (
     ImageRecord,
     TextChunkRecord,
+    delete_document,
     get_default_client,
     get_existing_content_hash,
     upsert_image,
@@ -231,3 +232,8 @@ def ingest_file(
         return IngestResult(doc_id=doc_id, status="ingested", chunks_written=written)
     except Exception as exc:  # noqa: BLE001 - a single failed file must not abort a batch ingest job
         return IngestResult(doc_id=doc_id or source_ref, status="failed", chunks_written=0, error=str(exc))
+
+
+def delete_ingested_document(doc_id: str, client=None) -> None:
+    client = client or get_default_client()
+    delete_document(client, doc_id)
