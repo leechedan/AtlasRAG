@@ -20,3 +20,11 @@ class SearchTextResponse(BaseModel):
 class SearchImageResponse(BaseModel):
     image_hits: list[SearchHitOut]
     related_text_hits: list[SearchHitOut]
+
+
+class UploadResponse(BaseModel):
+    job_id: str
+
+
+class DeleteResponse(BaseModel):
+    status: str
