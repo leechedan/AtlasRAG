@@ -285,6 +285,31 @@ def test_get_job_status_returns_progress(mock_get_conn, mock_get_status):
     assert response.json()["processed"] == 1
 
 
+@patch("app.api.routes.jobs.list_all_job_statuses")
+@patch("app.api.routes.jobs.get_redis_connection")
+def test_list_jobs_returns_all_summaries(mock_get_conn, mock_list_statuses):
+    mock_list_statuses.return_value = [
+        {"job_id": "job-1", "total": 2, "processed": 2, "success_count": 2, "failed_count": 0},
+        {"job_id": "job-2", "total": 1, "processed": 1, "success_count": 0, "failed_count": 1},
+    ]
+
+    client = TestClient(app)
+    response = client.get("/jobs")
+
+    assert response.status_code == 200
+    assert response.json() == mock_list_statuses.return_value
+
+
+@patch("app.api.routes.jobs.delete_job_status")
+@patch("app.api.routes.jobs.get_redis_connection")
+def test_delete_job_removes_status(mock_get_conn, mock_delete_status):
+    client = TestClient(app)
+    response = client.delete("/jobs/job-1")
+
+    assert response.status_code == 204
+    mock_delete_status.assert_called_once_with(mock_get_conn.return_value, "job-1")
+
+
 def test_get_collections_stats():
     app.dependency_overrides[get_store_client] = lambda: object()
     with patch("app.api.routes.collections.get_stats", return_value={"text_chunks_count": 5, "images_count": 2}):

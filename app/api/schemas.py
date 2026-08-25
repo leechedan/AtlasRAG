@@ -52,6 +52,14 @@ class JobStatusResponse(BaseModel):
     files: dict
 
 
+class JobSummaryOut(BaseModel):
+    job_id: str
+    total: int
+    processed: int
+    success_count: int
+    failed_count: int
+
+
 class CollectionsStatsResponse(BaseModel):
     text_chunks_count: int
     images_count: int
