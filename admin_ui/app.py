@@ -140,6 +140,29 @@ def do_select_document(documents_table, evt: gr.SelectData):
     return [[c["chunk_index"], c["page"], c["source_type"], c["chunk_id"], c["text"]] for c in chunks]
 
 
+def do_list_jobs():
+    response = httpx.get(f"{API_BASE_URL}/jobs", timeout=30)
+    response.raise_for_status()
+    jobs = response.json()
+    return [
+        [j["job_id"], j["total"], j["processed"], j["success_count"], j["failed_count"]]
+        for j in jobs
+    ]
+
+
+def do_select_job(jobs_table, evt: gr.SelectData):
+    row_index = evt.index[0]
+    return jobs_table[row_index][0]
+
+
+def do_delete_job(job_id: str | None):
+    if not job_id:
+        return "请先在任务记录列表中选择一行", gr.update()
+    response = httpx.delete(f"{API_BASE_URL}/jobs/{job_id}", timeout=30)
+    response.raise_for_status()
+    return f"已删除任务记录 {job_id}", do_list_jobs()
+
+
 with gr.Blocks(title="检索服务管理界面") as demo:
     gr.Markdown("# 多模态检索服务 — 管理/测试界面")
 
@@ -218,6 +241,22 @@ with gr.Blocks(title="检索服务管理界面") as demo:
         refresh_docs_button.click(do_list_documents, None, documents_table)
         documents_table.select(do_select_document, documents_table, chunks_table)
         demo.load(do_list_documents, None, documents_table)
+
+    with gr.Tab("任务记录"):
+        refresh_jobs_button = gr.Button("刷新任务记录")
+        jobs_table = gr.Dataframe(
+            headers=["job_id", "总数", "已处理", "成功数", "失败数"],
+            type="array",
+            interactive=False,
+            label="任务记录（点击一行选中，用下方按钮删除）",
+        )
+        selected_job_id = gr.State(None)
+        delete_job_button = gr.Button("删除所选任务记录")
+        delete_job_result = gr.Textbox(label="删除结果")
+        refresh_jobs_button.click(do_list_jobs, None, jobs_table)
+        jobs_table.select(do_select_job, jobs_table, selected_job_id)
+        delete_job_button.click(do_delete_job, selected_job_id, [delete_job_result, jobs_table])
+        demo.load(do_list_jobs, None, jobs_table)
 
 
 if __name__ == "__main__":
