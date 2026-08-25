@@ -137,7 +137,16 @@ def do_select_document(documents_table, evt: gr.SelectData):
     response = httpx.get(f"{API_BASE_URL}/documents/{doc_id}/chunks", timeout=30)
     response.raise_for_status()
     chunks = response.json()
-    return [[c["chunk_index"], c["page"], c["source_type"], c["chunk_id"], c["text"]] for c in chunks]
+    rows = [[c["chunk_index"], c["page"], c["source_type"], c["chunk_id"], c["text"]] for c in chunks]
+    return rows, doc_id
+
+
+def do_delete_document(doc_id: str | None):
+    if not doc_id:
+        return "请先在文档列表中选择一行", gr.update(), gr.update()
+    response = httpx.delete(f"{API_BASE_URL}/documents/{doc_id}", timeout=30)
+    response.raise_for_status()
+    return f"已删除文档 {doc_id}", do_list_documents(), []
 
 
 def do_list_jobs():
@@ -231,6 +240,9 @@ with gr.Blocks(title="检索服务管理界面") as demo:
             interactive=False,
             label="文档列表（点击一行查看该文档的分片）",
         )
+        selected_doc_id = gr.State(None)
+        delete_doc_button = gr.Button("删除所选文档")
+        delete_doc_result = gr.Textbox(label="删除结果")
         chunks_table = gr.Dataframe(
             headers=["序号", "页码", "内容类型", "chunk_id", "文本"],
             type="array",
@@ -239,7 +251,8 @@ with gr.Blocks(title="检索服务管理界面") as demo:
             label="分片内容",
         )
         refresh_docs_button.click(do_list_documents, None, documents_table)
-        documents_table.select(do_select_document, documents_table, chunks_table)
+        documents_table.select(do_select_document, documents_table, [chunks_table, selected_doc_id])
+        delete_doc_button.click(do_delete_document, selected_doc_id, [delete_doc_result, documents_table, chunks_table])
         demo.load(do_list_documents, None, documents_table)
 
     with gr.Tab("任务记录"):

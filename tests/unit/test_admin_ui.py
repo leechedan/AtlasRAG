@@ -46,3 +46,53 @@ def test_do_delete_job_without_selection_does_not_call_api():
     message, rows = do_delete_job(None)
 
     assert "选择" in message
+
+
+from admin_ui.app import do_delete_document, do_select_document
+
+
+@respx.mock
+def test_do_select_document_returns_chunks_and_doc_id():
+    respx.get("http://localhost:8000/documents/doc-1/chunks").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "chunk_index": 0,
+                    "page": None,
+                    "source_type": "normal",
+                    "chunk_id": "c1",
+                    "text": "hello",
+                    "doc_id": "doc-1",
+                    "source_path": "/a.txt",
+                    "file_type": "txt",
+                }
+            ],
+        )
+    )
+    documents_table = [["doc-1", "a.txt", "txt", "upload", 1, "normal"]]
+
+    rows, doc_id = do_select_document(documents_table, FakeSelectData(0))
+
+    assert rows == [[0, None, "normal", "c1", "hello"]]
+    assert doc_id == "doc-1"
+
+
+@respx.mock
+def test_do_delete_document_calls_api_and_refreshes_list():
+    respx.delete("http://localhost:8000/documents/doc-1").mock(
+        return_value=httpx.Response(200, json={"status": "deleted"})
+    )
+    respx.get("http://localhost:8000/documents").mock(return_value=httpx.Response(200, json=[]))
+
+    message, table, chunks = do_delete_document("doc-1")
+
+    assert "doc-1" in message
+    assert table == []
+    assert chunks == []
+
+
+def test_do_delete_document_without_selection_does_not_call_api():
+    message, table, chunks = do_delete_document(None)
+
+    assert "选择" in message
