@@ -12,9 +12,11 @@ class DenseSparseVector:
 
 class TextEmbedder:
     def __init__(self, model_name: str):
+        import torch
         from FlagEmbedding import BGEM3FlagModel
 
-        self._model = BGEM3FlagModel(model_name, use_fp16=True)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model = BGEM3FlagModel(model_name, use_fp16=True, device=device)
 
     def embed(self, texts: list[str]) -> list[DenseSparseVector]:
         output = self._model.encode(
