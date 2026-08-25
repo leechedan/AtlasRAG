@@ -10,6 +10,7 @@ from app.store.qdrant_client import (
     get_existing_content_hash,
     get_qdrant_client,
     get_stats,
+    list_all_documents,
     list_chunks_for_document,
     search_images,
     search_text_hybrid,
@@ -241,3 +242,120 @@ def test_upsert_text_chunk_overwrites_same_doc_id_and_chunk_index():
     assert len(chunks) == 1
     assert chunks[0]["text"] == "new text"
     assert get_existing_content_hash(client, "dupdoc") == "h-new"
+
+
+def test_list_all_documents_aggregates_text_chunks():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    for idx in range(2):
+        upsert_text_chunk(
+            client,
+            TextChunkRecord(
+                doc_id="doc-agg", chunk_index=idx, text=f"c{idx}", source_path="/agg.txt",
+                file_type="txt", page=None, source_type="normal", content_hash="hagg",
+                origin="upload", created_at="2026-08-25T00:00:00+00:00",
+            ),
+            vec,
+        )
+
+    docs = list_all_documents(client)
+
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc["doc_id"] == "doc-agg"
+    assert doc["filename"] == "agg.txt"
+    assert doc["chunk_count"] == 2
+    assert doc["source_types"] == ["normal"]
+    assert doc["origin"] == "upload"
+    assert doc["related_images"] == []
+
+
+def test_list_all_documents_attaches_standalone_image_with_same_doc_id():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    upsert_text_chunk(
+        client,
+        TextChunkRecord(
+            doc_id="doc-img-ocr", chunk_index=0, text="ocr text", source_path="/photo.png",
+            file_type="png", page=None, source_type="ocr_image", content_hash="himg",
+            origin="watch", created_at="2026-08-25T00:00:00+00:00",
+        ),
+        vec,
+    )
+    upsert_image(
+        client,
+        ImageRecord(
+            doc_id="doc-img-ocr", source_path="/photo.png", thumbnail_path="/thumb/photo.jpg",
+            width=100, height=200, has_ocr_text=True, content_hash="himg",
+            origin="watch", created_at="2026-08-25T00:00:00+00:00",
+        ),
+        [0.2] * 512,
+    )
+
+    docs = list_all_documents(client)
+
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "doc-img-ocr"
+    assert docs[0]["related_images"] == [
+        {"doc_id": "doc-img-ocr", "thumbnail_path": "/thumb/photo.jpg", "width": 100, "height": 200}
+    ]
+
+
+def test_list_all_documents_attaches_scanned_pdf_page_image_by_prefix():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    upsert_text_chunk(
+        client,
+        TextChunkRecord(
+            doc_id="doc-pdf", chunk_index=0, text="page text", source_path="/scan.pdf",
+            file_type="pdf", page=1, source_type="ocr_image", content_hash="hpdf",
+            origin="upload", created_at="2026-08-25T00:00:00+00:00",
+        ),
+        vec,
+    )
+    upsert_image(
+        client,
+        ImageRecord(
+            doc_id="doc-pdf:page1", source_path="/scan.pdf#page=1", thumbnail_path="/thumb/doc-pdf:page1.jpg",
+            width=800, height=1000, has_ocr_text=True, content_hash="hpdf",
+            origin="upload", created_at="2026-08-25T00:00:00+00:00",
+        ),
+        [0.2] * 512,
+    )
+
+    docs = list_all_documents(client)
+
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "doc-pdf"
+    assert len(docs[0]["related_images"]) == 1
+    assert docs[0]["related_images"][0]["doc_id"] == "doc-pdf:page1"
+
+
+def test_list_all_documents_lists_orphan_image_as_its_own_document():
+    client = make_client()
+    upsert_image(
+        client,
+        ImageRecord(
+            doc_id="doc-standalone-img", source_path="/pure.jpg", thumbnail_path="/thumb/pure.jpg",
+            width=50, height=50, has_ocr_text=False, content_hash="hpure",
+            origin="watch", created_at="2026-08-25T00:00:00+00:00",
+        ),
+        [0.2] * 512,
+    )
+
+    docs = list_all_documents(client)
+
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc["doc_id"] == "doc-standalone-img"
+    assert doc["file_type"] == "jpg"
+    assert doc["chunk_count"] == 0
+    assert doc["source_types"] == []
+    assert doc["related_images"] == [
+        {"doc_id": "doc-standalone-img", "thumbnail_path": "/thumb/pure.jpg", "width": 50, "height": 50}
+    ]
+
+
+def test_list_all_documents_empty_collections_returns_empty_list():
+    client = make_client()
+    assert list_all_documents(client) == []

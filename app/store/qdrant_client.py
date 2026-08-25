@@ -1,6 +1,7 @@
 import hashlib
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 from qdrant_client import QdrantClient, models
 
@@ -215,6 +216,82 @@ def list_chunks_for_document(client: QdrantClient, doc_id: str) -> list[dict]:
         if offset is None:
             break
     return sorted(payloads, key=lambda p: p["chunk_index"])
+
+
+def _scroll_all(client: QdrantClient, collection: str) -> list:
+    points = []
+    offset = None
+    while True:
+        batch, offset = client.scroll(collection_name=collection, limit=100, offset=offset)
+        points.extend(batch)
+        if offset is None:
+            break
+    return points
+
+
+def list_all_documents(client: QdrantClient) -> list[dict]:
+    text_docs: dict[str, dict] = {}
+    for p in _scroll_all(client, TEXT_COLLECTION):
+        payload = p.payload
+        doc_id = payload["doc_id"]
+        if doc_id not in text_docs:
+            text_docs[doc_id] = {
+                "doc_id": doc_id,
+                "source_path": payload["source_path"],
+                "filename": Path(payload["source_path"]).name,
+                "file_type": payload["file_type"],
+                "origin": payload.get("origin"),
+                "chunk_count": 0,
+                "source_types": set(),
+                "created_at": payload.get("created_at"),
+                "content_hash": payload["content_hash"],
+                "related_images": [],
+            }
+        entry = text_docs[doc_id]
+        entry["chunk_count"] += 1
+        entry["source_types"].add(payload["source_type"])
+
+    image_only_docs: dict[str, dict] = {}
+    for p in _scroll_all(client, IMAGE_COLLECTION):
+        payload = p.payload
+        img_doc_id = payload["doc_id"]
+        image_summary = {
+            "doc_id": img_doc_id,
+            "thumbnail_path": payload["thumbnail_path"],
+            "width": payload["width"],
+            "height": payload["height"],
+        }
+
+        parent_id = None
+        if ":page" in img_doc_id:
+            candidate = img_doc_id.split(":page")[0]
+            if candidate in text_docs:
+                parent_id = candidate
+        elif img_doc_id in text_docs:
+            parent_id = img_doc_id
+
+        if parent_id is not None:
+            text_docs[parent_id]["related_images"].append(image_summary)
+        else:
+            image_only_docs[img_doc_id] = {
+                "doc_id": img_doc_id,
+                "source_path": payload["source_path"],
+                "filename": Path(payload["source_path"]).name,
+                "file_type": Path(payload["source_path"]).suffix.lstrip(".").lower(),
+                "origin": payload.get("origin"),
+                "chunk_count": 0,
+                "source_types": [],
+                "created_at": payload.get("created_at"),
+                "content_hash": payload["content_hash"],
+                "related_images": [image_summary],
+            }
+
+    documents = []
+    for entry in text_docs.values():
+        entry["source_types"] = sorted(entry["source_types"])
+        documents.append(entry)
+    documents.extend(image_only_docs.values())
+    return sorted(documents, key=lambda d: d["doc_id"])
 
 
 def get_stats(client: QdrantClient) -> dict:
