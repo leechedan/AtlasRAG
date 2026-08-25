@@ -6,6 +6,17 @@ services:
     volumes:
       - ./data/qdrant:/qdrant/storage
     restart: unless-stopped
+    healthcheck:
+      # qdrant/qdrant:latest has no curl/wget/python (confirmed by
+      # inspecting the image's /bin), so we speak raw HTTP over bash's
+      # /dev/tcp instead -- confirmed working against a running
+      # qdrant/qdrant:latest container (both the success and
+      # connection-refused paths return the expected exit codes).
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333 && printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3 && timeout 2 cat <&3 | grep -q 200'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   redis:
     image: redis:7
@@ -39,6 +50,23 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
+    healthcheck:
+      # /health only returns 200 once the lifespan hook in app/api/main.py
+      # has finished loading both model singletons (Important Finding I1).
+      # python3 (not curl -- confirmed absent from this python:3.12-slim
+      # image via `docker run --rm <api-image> which curl`) is guaranteed
+      # present since it's the base image's own interpreter. A non-200
+      # response (e.g. 503 while still loading) raises HTTPError, which
+      # exits non-zero same as a connection failure -- verified against
+      # the built multimodal-retrieval-service-api image.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request as u,sys; sys.exit(0 if u.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      # Model loading (BGE-M3 + Chinese-CLIP) can take real time, especially
+      # on first run before weights are cached -- don't mark unhealthy while
+      # legitimately still starting up.
+      start_period: 120s
 
   worker:
     build:
