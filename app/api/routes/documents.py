@@ -5,13 +5,19 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.api.deps import get_store_client
-from app.api.schemas import DeleteResponse, DocumentSummaryOut, UploadResponse
+from app.api.schemas import ChunkOut, DeleteResponse, DocumentSummaryOut, UploadResponse
 from app.config import settings
 from app.ingest.hashing import upload_source_ref
 from app.jobs.queue import get_queue
 from app.jobs.status import create_job_status
 from app.jobs.tasks import delete_document_job, ingest_file_job
-from app.store.qdrant_client import find_image_by_doc_id, list_all_documents
+from app.store.qdrant_client import (
+    compute_chunk_id,
+    find_image_by_doc_id,
+    get_existing_content_hash,
+    list_all_documents,
+    list_chunks_for_document,
+)
 
 router = APIRouter()
 
@@ -76,6 +82,26 @@ async def upload_document(
 @router.get("/documents", response_model=list[DocumentSummaryOut])
 def list_documents(store=Depends(get_store_client)):
     return [DocumentSummaryOut(**d) for d in list_all_documents(store)]
+
+
+@router.get("/documents/{doc_id}/chunks", response_model=list[ChunkOut])
+def get_document_chunks(doc_id: str, store=Depends(get_store_client)):
+    if get_existing_content_hash(store, doc_id) is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    chunks = list_chunks_for_document(store, doc_id)
+    return [
+        ChunkOut(
+            chunk_id=compute_chunk_id(c["doc_id"], c["chunk_index"]),
+            doc_id=c["doc_id"],
+            chunk_index=c["chunk_index"],
+            text=c["text"],
+            page=c.get("page"),
+            source_type=c["source_type"],
+            source_path=c["source_path"],
+            file_type=c["file_type"],
+        )
+        for c in chunks
+    ]
 
 
 @router.get("/documents/{doc_id}/thumbnail")

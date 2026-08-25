@@ -247,3 +247,37 @@ def test_list_documents_empty_when_no_documents(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_get_document_chunks_returns_ordered_chunks(monkeypatch):
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr("app.api.routes.documents.get_existing_content_hash", lambda store, doc_id: "h1")
+    monkeypatch.setattr(
+        "app.api.routes.documents.list_chunks_for_document",
+        lambda store, doc_id: [
+            {
+                "doc_id": doc_id, "chunk_index": 0, "text": "c0", "page": None,
+                "source_type": "normal", "source_path": "/a.txt", "file_type": "txt",
+            },
+        ],
+    )
+
+    client = TestClient(app)
+    response = client.get("/documents/d1/chunks")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["chunk_index"] == 0
+    assert body[0]["chunk_id"]
+
+
+def test_get_document_chunks_404_when_document_missing(monkeypatch):
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr("app.api.routes.documents.get_existing_content_hash", lambda store, doc_id: None)
+
+    client = TestClient(app)
+    response = client.get("/documents/unknown/chunks")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 404
