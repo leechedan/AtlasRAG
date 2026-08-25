@@ -553,6 +553,18 @@ def chunk_csv_rows(
 
     for row in rows:
         line = ", ".join(f"{k}={row.get(k, '')}" for k in header)
+        single_row_len = len(header_line) + 1 + len(line)
+
+        if single_row_len > max_chars:
+            # 这一行自己就装不下（哪怕独占一个 chunk 也超限），先冲掉已攒的，
+            # 再把这一行本身用 chunk_text 硬切，保证任何情况下产出的 chunk 都不超过 max_chars
+            flush()
+            current_lines = []
+            piece_budget = max(max_chars - len(header_line) - 1, 1)
+            for piece in chunk_text(line, chunk_size=piece_budget, chunk_overlap=0, separators=[""]):
+                chunks.append(header_line + "\n" + piece)
+            continue
+
         candidate_len = len(header_line) + 1 + sum(len(l) + 1 for l in current_lines) + len(line) + 1
 
         if current_lines and (len(current_lines) >= rows_per_chunk or candidate_len > max_chars):
@@ -565,10 +577,28 @@ def chunk_csv_rows(
     return chunks
 ```
 
+**这个函数最初的版本有个 bug（在本 task 的 code review 时发现）：** 单行内容本身（含表头）就超过 `max_chars` 时，因为 `current_lines` 是空的，触发不了"先 flush 再开新 chunk"的判断，会直接把这个超限的单行原样塞进 chunk，产出一个超过 `max_chars` 的 chunk——违反了"检索接口原样返回 chunk、不做二次截断"的前提。上面的实现加了 `single_row_len > max_chars` 分支，遇到这种超大单行就用 `chunk_text`（复用本文件里的函数）把这一行自己硬切开，保证任何情况下产出的 chunk 都不超过 `max_chars`，内容也不会被截断丢失。
+
+- [ ] **Step 3b: 补一个超大单行的回归测试**
+
+在 `tests/unit/test_chunking.py` 追加：
+
+```python
+def test_chunk_csv_rows_splits_single_oversized_row():
+    header = ["name", "bio"]
+    rows = [{"name": "p0", "bio": "z" * 3000}]
+
+    chunks = chunk_csv_rows(rows, header, rows_per_chunk=20, max_chars=1000)
+
+    assert len(chunks) > 1
+    assert all(len(c) <= 1000 for c in chunks)
+    assert sum(c.count("z") for c in chunks) == 3000
+```
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `cd retrieval-service && .venv/bin/pytest tests/unit/test_chunking.py -v`
-Expected: 7 passed
+Expected: 8 passed
 
 - [ ] **Step 5: Commit**
 
