@@ -27,7 +27,7 @@ class FakeStoreClient:
 
 
 def override_search_text_hybrid(*args, **kwargs):
-    return [SearchHit(score=0.9, payload={"doc_id": "d1", "text": "命中文本"})]
+    return [SearchHit(score=0.9, payload={"doc_id": "d1", "chunk_index": 0, "text": "命中文本"})]
 
 
 def override_search_images(*args, **kwargs):
@@ -56,6 +56,9 @@ def test_search_text_returns_text_hits(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["text_hits"][0]["payload"]["doc_id"] == "d1"
+    assert body["text_hits"][0]["doc_id"] == "d1"
+    assert body["text_hits"][0]["chunk_index"] == 0
+    assert body["text_hits"][0]["chunk_id"]
     assert body["image_hits"] == []
     app.dependency_overrides.clear()
 
@@ -81,6 +84,9 @@ def test_search_image_returns_image_hits(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["image_hits"][0]["payload"]["doc_id"] == "img1"
+    assert body["image_hits"][0]["doc_id"] == "img1"
+    assert body["image_hits"][0]["chunk_index"] is None
+    assert body["image_hits"][0]["chunk_id"]
     app.dependency_overrides.clear()
 
 
@@ -96,4 +102,6 @@ def test_search_image_returns_related_text_hits(monkeypatch):
     body = response.json()
     assert len(body["related_text_hits"]) == 1
     assert body["related_text_hits"][0]["payload"]["text"] == "关联OCR文本"
+    assert body["related_text_hits"][0]["doc_id"] == "img1"
+    assert body["related_text_hits"][0]["chunk_index"] == 0
     app.dependency_overrides.clear()

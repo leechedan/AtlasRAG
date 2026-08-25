@@ -11,6 +11,7 @@ from app.api.schemas import (
     SearchTextResponse,
 )
 from app.store.qdrant_client import (
+    compute_chunk_id,
     list_chunks_for_document,
     search_images,
     search_text_hybrid,
@@ -24,6 +25,18 @@ router = APIRouter()
 # association" without implying a comparable relevance ranking against the
 # image_hits' real similarity scores.
 RELATED_TEXT_SENTINEL_SCORE = 1.0
+
+
+def _make_hit_out(score: float, payload: dict, chunk_index: int | None) -> SearchHitOut:
+    doc_id = payload["doc_id"]
+    point_chunk_index = chunk_index if chunk_index is not None else 0
+    return SearchHitOut(
+        score=score,
+        doc_id=doc_id,
+        chunk_index=chunk_index,
+        chunk_id=compute_chunk_id(doc_id, point_chunk_index),
+        payload=payload,
+    )
 
 
 @router.post("/search/text", response_model=SearchTextResponse)
@@ -45,8 +58,8 @@ def search_text(
         image_hits = search_images(store, clip_query_vector, top_k=request.top_k)
 
     return SearchTextResponse(
-        text_hits=[SearchHitOut(score=h.score, payload=h.payload) for h in text_hits],
-        image_hits=[SearchHitOut(score=h.score, payload=h.payload) for h in image_hits],
+        text_hits=[_make_hit_out(h.score, h.payload, h.payload.get("chunk_index")) for h in text_hits],
+        image_hits=[_make_hit_out(h.score, h.payload, None) for h in image_hits],
     )
 
 
@@ -63,7 +76,7 @@ async def search_image(
     image_hits = search_images(store, query_vector, top_k=top_k)
 
     # For each returned image hit, look up its associated OCR text chunks
-    # (written under the same doc_id for standalone images — see
+    # (written under the same doc_id for standalone images -- see
     # _ingest_image_file in app/ingest/pipeline.py) and flatten them into a
     # single related_text_hits list. We query per-hit (not just the top hit)
     # so that OCR text associated with any of the returned images is
@@ -79,9 +92,11 @@ async def search_image(
         if not doc_id:
             continue
         for chunk in list_chunks_for_document(store, doc_id):
-            related_text_hits.append(SearchHitOut(score=RELATED_TEXT_SENTINEL_SCORE, payload=chunk))
+            related_text_hits.append(
+                _make_hit_out(RELATED_TEXT_SENTINEL_SCORE, chunk, chunk.get("chunk_index"))
+            )
 
     return SearchImageResponse(
-        image_hits=[SearchHitOut(score=h.score, payload=h.payload) for h in image_hits],
+        image_hits=[_make_hit_out(h.score, h.payload, None) for h in image_hits],
         related_text_hits=related_text_hits,
     )
