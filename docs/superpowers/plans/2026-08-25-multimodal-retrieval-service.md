@@ -1363,9 +1363,16 @@ def make_text_image() -> Image.Image:
 @patch("app.ingest.parsers.image_parser.run_ocr", return_value="hello")
 @patch("app.ingest.parsers.image_parser.get_clip_embedder")
 def test_parse_image_returns_ocr_text_and_thumbnail(mock_get_clip, mock_ocr, tmp_path, monkeypatch):
-    from app.config import settings
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(settings, "thumbnails_dir", tmp_path)
+    # `settings.thumbnails_dir` 是 app/config.py 里的只读 @property（由 data_dir 派生），
+    # 不能直接 monkeypatch.setattr(settings实例, ...) 去改——那会触发 pydantic 的
+    # AttributeError（property 没有 setter）。正确做法是替换 image_parser 模块里
+    # `settings` 这个名字本身指向的对象，而不是去改共享单例上的属性。
+    monkeypatch.setattr(
+        "app.ingest.parsers.image_parser.settings",
+        SimpleNamespace(thumbnails_dir=tmp_path),
+    )
     mock_get_clip.return_value.embed_image.return_value = [0.1] * 512
 
     result = parse_image(make_text_image(), doc_id="img-doc-1")
@@ -1377,6 +1384,8 @@ def test_parse_image_returns_ocr_text_and_thumbnail(mock_get_clip, mock_ocr, tmp
     assert (tmp_path / "img-doc-1.jpg").exists()
     assert result.thumbnail_path == str(tmp_path / "img-doc-1.jpg")
 ```
+
+**这个测试最初的版本有个 bug（code review 时发现）：** 用 `monkeypatch.setattr(settings, "thumbnails_dir", tmp_path)` 直接改单例对象的属性，但 `thumbnails_dir` 在 `app/config.py`（Task 1）里是只读 `@property`，这样改会报错。当时的实现者为了让测试跑通，改了 Task 1 已经批准的 `config.py`（把只读属性改成可赋值字段）——这个改动本身没有引入 bug，但没必要动一个已经批准的、别的 task 产出的文件来解决一个纯粹属于本 task 测试写法的问题。正确做法是像上面这样，在测试里换掉 `image_parser` 模块自己引用的 `settings` 这个名字（`monkeypatch.setattr("app.ingest.parsers.image_parser.settings", ...)`），而不是改共享单例或者改 Task 1 的文件。`config.py` 应该保持 Task 1 原来的只读 `@property` 写法不变。
 
 - [ ] **Step 2: 运行测试确认失败**
 
