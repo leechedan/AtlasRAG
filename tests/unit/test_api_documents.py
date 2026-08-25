@@ -61,6 +61,26 @@ def test_upload_document_with_custom_chunk_options(mock_get_queue):
 
 
 @patch("app.api.routes.documents.get_queue")
+def test_upload_document_sets_job_timeout(mock_get_queue):
+    """Regression test for Critical Finding 1: without an explicit
+    job_timeout, RQ's default of 180s (rq.queue.Queue.DEFAULT_TIMEOUT)
+    applies to every enqueued job. A single-file ingest can involve slow
+    parsing/OCR/embedding for large files, so it gets a generous but
+    bounded timeout rather than the 180s default."""
+    mock_queue = MagicMock()
+    mock_queue.enqueue.return_value = MagicMock(id="rq-job-timeout")
+    mock_get_queue.return_value = mock_queue
+
+    client = TestClient(app)
+    client.post(
+        "/documents/upload", files={"file": ("note.txt", io.BytesIO(b"hello"), "text/plain")}
+    )
+
+    _, kwargs = mock_queue.enqueue.call_args
+    assert kwargs["job_timeout"] == 3600
+
+
+@patch("app.api.routes.documents.get_queue")
 def test_delete_document_enqueues_delete_job(mock_get_queue):
     mock_queue = MagicMock()
     mock_get_queue.return_value = mock_queue

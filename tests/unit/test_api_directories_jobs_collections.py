@@ -57,6 +57,33 @@ def test_index_directory_passes_custom_chunk_options(mock_get_queue):
     assert kwargs["separators"] == ["\n\n", "---"]
 
 
+@patch("app.api.routes.directories.get_queue")
+def test_index_directory_sets_unlimited_job_timeout(mock_get_queue, tmp_path):
+    """Regression test for Critical Finding 1: ingest_directory_job processes
+    an entire directory inside one job. Without an explicit job_timeout,
+    RQ's default of 180s (rq.queue.Queue.DEFAULT_TIMEOUT) applies, so any
+    directory ingest taking longer than 3 minutes gets SIGALRM-killed
+    mid-batch, leaving a partial index and no retry. Directory jobs get
+    job_timeout=-1 (verified against the installed rq==2.1.0 source and
+    empirically, via signal.alarm(-1), to mean "never times out" -- RQ's
+    death-penalty/heartbeat code paths special-case job.timeout == -1
+    throughout rq/worker.py) since a directory can contain arbitrarily many
+    files."""
+    mock_job = MagicMock(id="rq-dir-job-timeout")
+    mock_queue = MagicMock()
+    mock_queue.enqueue.return_value = mock_job
+    mock_get_queue.return_value = mock_queue
+
+    client = TestClient(app)
+    response = client.post(
+        "/directories/index", json={"path": str(tmp_path), "recursive": True, "watch": False}
+    )
+
+    assert response.status_code == 200
+    _, kwargs = mock_queue.enqueue.call_args
+    assert kwargs["job_timeout"] == -1
+
+
 @patch("app.jobs.tasks.ingest_file")
 def test_index_directory_returned_job_id_matches_real_status_key(mock_ingest_file, tmp_path):
     """Regression test for the enqueue/save race: the previous implementation

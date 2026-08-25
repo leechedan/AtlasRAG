@@ -20,5 +20,19 @@ def index_directory(request: IndexDirectoryRequest):
         chunk_overlap=request.chunk_overlap,
         separators=request.separators,
         job_id=job_id,
+        # A directory ingest can process arbitrarily many files, so it gets
+        # an effectively unbounded timeout rather than RQ's 180s default --
+        # otherwise any directory taking longer than 3 minutes gets
+        # SIGALRM-killed mid-batch, leaving a partial index with no retry.
+        # job_timeout=-1 means "never times out" (verified against the
+        # installed rq==2.1.0: rq/worker.py special-cases job.timeout == -1
+        # in both its heartbeat-TTL and horse-monitor logic, and
+        # signal.alarm(-1) -- what the death-penalty timeout ultimately
+        # calls -- was empirically confirmed not to fire). job_timeout is an
+        # RQ-reserved kwarg popped out of kwargs by Queue.parse_args before
+        # the rest are forwarded to the target function, so it doesn't
+        # collide with ingest_directory_job's own kwargs, the same way
+        # job_id= above doesn't.
+        job_timeout=-1,
     )
     return UploadResponse(job_id=job.id)

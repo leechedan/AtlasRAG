@@ -57,6 +57,15 @@ async def upload_document(
         chunk_overlap=chunk_overlap,
         separators=separators,
         job_id=job_id,
+        # Without this, RQ's default job_timeout (180s, rq.queue.Queue.
+        # DEFAULT_TIMEOUT) applies and any file whose parsing/OCR/embedding
+        # takes longer than 3 minutes gets SIGALRM-killed mid-ingest.
+        # job_timeout is an RQ-reserved kwarg (confirmed by reading
+        # rq/queue.py: Queue.parse_args pops 'job_timeout' out of kwargs
+        # before the rest are forwarded to the target function), so it
+        # doesn't collide with ingest_file_job's own kwargs, the same way
+        # job_id= above doesn't.
+        job_timeout=3600,
     )
     return UploadResponse(job_id=job.id)
 
