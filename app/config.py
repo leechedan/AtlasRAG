@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,17 +18,13 @@ class Settings(BaseSettings):
     ocr_lang: str = "ch"
     watch_reconcile_interval_seconds: int = 3600
 
-    # Plain (settable) fields, derived from data_dir at construction time.
-    # Kept as real attributes (not read-only @property) so tests can
-    # monkeypatch them directly, e.g. monkeypatch.setattr(settings, "thumbnails_dir", tmp_path).
-    uploads_dir: Path = Path("./data/uploads")
-    thumbnails_dir: Path = Path("./data/thumbnails")
+    @property
+    def uploads_dir(self) -> Path:
+        return self.data_dir / "uploads"
 
-    def model_post_init(self, __context: Any) -> None:
-        if "uploads_dir" not in self.model_fields_set:
-            self.uploads_dir = self.data_dir / "uploads"
-        if "thumbnails_dir" not in self.model_fields_set:
-            self.thumbnails_dir = self.data_dir / "thumbnails"
+    @property
+    def thumbnails_dir(self) -> Path:
+        return self.data_dir / "thumbnails"
 
 
 settings = Settings()

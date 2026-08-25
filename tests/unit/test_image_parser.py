@@ -15,9 +15,12 @@ def make_text_image() -> Image.Image:
 @patch("app.ingest.parsers.image_parser.run_ocr", return_value="hello")
 @patch("app.ingest.parsers.image_parser.get_clip_embedder")
 def test_parse_image_returns_ocr_text_and_thumbnail(mock_get_clip, mock_ocr, tmp_path, monkeypatch):
-    from app.config import settings
+    from types import SimpleNamespace
 
-    monkeypatch.setattr(settings, "thumbnails_dir", tmp_path)
+    monkeypatch.setattr(
+        "app.ingest.parsers.image_parser.settings",
+        SimpleNamespace(thumbnails_dir=tmp_path),
+    )
     mock_get_clip.return_value.embed_image.return_value = [0.1] * 512
 
     result = parse_image(make_text_image(), doc_id="img-doc-1")

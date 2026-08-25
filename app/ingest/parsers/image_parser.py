@@ -21,6 +21,9 @@ def run_ocr(image: Image.Image) -> str:
     result = engine.ocr(np.array(image), cls=True)
     if not result or result[0] is None:
         return ""
+    # Assumes paddleocr==2.9.1 result shape: result[0] is a list of
+    # [box, (text, score)] per detected line; re-check this if paddleocr
+    # is ever upgraded (Task 11's PDF parser reuses this via run_ocr()).
     lines = [line[1][0] for line in result[0]]
     return "\n".join(lines)
 
