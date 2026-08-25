@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     ocr_lang: str = "ch"
     watch_reconcile_interval_seconds: int = 3600
     allowed_index_roots: list[Path] = []
+    log_level: str = "INFO"
 
     @property
     def uploads_dir(self) -> Path:

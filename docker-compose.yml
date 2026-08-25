@@ -36,9 +36,16 @@ services:
       QDRANT_PORT: 6333
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /srv/data
-      HF_HOME: /srv/data/hf_cache
+      # Bind-mounted straight to this host's real HuggingFace cache
+      # (~/.cache/huggingface) instead of an empty project-local dir, so
+      # BGE-M3/Chinese-CLIP -- already downloaded there from earlier
+      # bare-metal GPU testing on this machine -- are picked up immediately
+      # instead of re-downloading from scratch inside the container.
+      HF_HOME: /hf_cache
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./data:/srv/data
+      - ${HOME}/.cache/huggingface:/hf_cache
     depends_on:
       - qdrant
       - redis
@@ -78,9 +85,16 @@ services:
       QDRANT_PORT: 6333
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /srv/data
-      HF_HOME: /srv/data/hf_cache
+      # Bind-mounted straight to this host's real HuggingFace cache
+      # (~/.cache/huggingface) instead of an empty project-local dir, so
+      # BGE-M3/Chinese-CLIP -- already downloaded there from earlier
+      # bare-metal GPU testing on this machine -- are picked up immediately
+      # instead of re-downloading from scratch inside the container.
+      HF_HOME: /hf_cache
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./data:/srv/data
+      - ${HOME}/.cache/huggingface:/hf_cache
     depends_on:
       - qdrant
       - redis

@@ -44,10 +44,11 @@ import logging
 
 from rq import SimpleWorker
 
+from app.config import settings
 from app.ingest.watcher import DirectoryWatchManager
 from app.jobs.queue import get_redis_connection
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
 
 
