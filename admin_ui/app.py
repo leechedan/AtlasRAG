@@ -117,6 +117,29 @@ def do_stats():
     return response.json()
 
 
+def do_list_documents():
+    response = httpx.get(f"{API_BASE_URL}/documents", timeout=30)
+    response.raise_for_status()
+    docs = response.json()
+    return [
+        [d["doc_id"], d["filename"], d["file_type"], d["origin"], d["chunk_count"], ", ".join(d["source_types"])]
+        for d in docs
+    ]
+
+
+def do_select_document(documents_table, evt: gr.SelectData):
+    # documents_table is the Dataframe's current value (type="array" ->
+    # list[list]); evt.index[0] is the clicked row, column 0 is the full
+    # doc_id (kept untruncated in that column specifically so this lookup
+    # is unambiguous -- a shortened id could collide or fail to match).
+    row_index = evt.index[0]
+    doc_id = documents_table[row_index][0]
+    response = httpx.get(f"{API_BASE_URL}/documents/{doc_id}/chunks", timeout=30)
+    response.raise_for_status()
+    chunks = response.json()
+    return [[c["chunk_index"], c["page"], c["source_type"], c["chunk_id"], c["text"]] for c in chunks]
+
+
 with gr.Blocks(title="检索服务管理界面") as demo:
     gr.Markdown("# 多模态检索服务 — 管理/测试界面")
 
@@ -176,6 +199,25 @@ with gr.Blocks(title="检索服务管理界面") as demo:
         stats_button = gr.Button("刷新")
         stats_output = gr.JSON(label="统计")
         stats_button.click(do_stats, None, stats_output)
+
+    with gr.Tab("文档管理"):
+        refresh_docs_button = gr.Button("刷新文档列表")
+        documents_table = gr.Dataframe(
+            headers=["doc_id", "文件名", "类型", "来源", "分片数", "内容类型"],
+            type="array",
+            interactive=False,
+            label="文档列表（点击一行查看该文档的分片）",
+        )
+        chunks_table = gr.Dataframe(
+            headers=["序号", "页码", "内容类型", "chunk_id", "文本"],
+            type="array",
+            interactive=False,
+            wrap=True,
+            label="分片内容",
+        )
+        refresh_docs_button.click(do_list_documents, None, documents_table)
+        documents_table.select(do_select_document, documents_table, chunks_table)
+        demo.load(do_list_documents, None, documents_table)
 
 
 if __name__ == "__main__":
