@@ -49,3 +49,30 @@ def get_job_status(redis_conn, job_id: str) -> dict:
         files[path] = json.loads(raw_value)
 
     return {"total": total, "processed": len(files), "files": files}
+
+
+def list_all_job_statuses(redis_conn) -> list[dict]:
+    job_ids = []
+    for raw_key in redis_conn.scan_iter(f"{JOB_KEY_PREFIX}*:total"):
+        key = raw_key.decode() if isinstance(raw_key, bytes) else raw_key
+        job_ids.append(key[len(JOB_KEY_PREFIX) : -len(":total")])
+
+    summaries = []
+    for job_id in sorted(job_ids):
+        status = get_job_status(redis_conn, job_id)
+        success_count = sum(1 for f in status["files"].values() if f["status"] != "failed")
+        failed_count = sum(1 for f in status["files"].values() if f["status"] == "failed")
+        summaries.append(
+            {
+                "job_id": job_id,
+                "total": status["total"],
+                "processed": status["processed"],
+                "success_count": success_count,
+                "failed_count": failed_count,
+            }
+        )
+    return summaries
+
+
+def delete_job_status(redis_conn, job_id: str) -> None:
+    redis_conn.delete(_total_key(job_id), _files_key(job_id))
