@@ -43,6 +43,8 @@ class TextChunkRecord:
     page: int | None
     source_type: str
     content_hash: str
+    origin: str | None = None
+    created_at: str | None = None
 
 
 @dataclass
@@ -54,6 +56,8 @@ class ImageRecord:
     height: int
     has_ocr_text: bool
     content_hash: str
+    origin: str | None = None
+    created_at: str | None = None
 
 
 @dataclass
@@ -62,14 +66,14 @@ class SearchHit:
     payload: dict
 
 
-def _point_id(doc_id: str, chunk_index: int) -> str:
+def compute_chunk_id(doc_id: str, chunk_index: int) -> str:
     # ":" 分隔符是安全的：doc_id 始终来自 make_doc_id 生成的哈希值，不含冒号，
     # 因此 doc_id:chunk_index 不会出现跨字段的歧义拼接。
     return hashlib.md5(f"{doc_id}:{chunk_index}".encode("utf-8")).hexdigest()
 
 
 def upsert_text_chunk(client: QdrantClient, record: TextChunkRecord, vector: DenseSparseVector) -> None:
-    point_id = _point_id(record.doc_id, record.chunk_index)
+    point_id = compute_chunk_id(record.doc_id, record.chunk_index)
     sparse_indices = list(vector.sparse.keys())
     sparse_values = list(vector.sparse.values())
     client.upsert(
@@ -90,6 +94,8 @@ def upsert_text_chunk(client: QdrantClient, record: TextChunkRecord, vector: Den
                     "page": record.page,
                     "source_type": record.source_type,
                     "content_hash": record.content_hash,
+                    "origin": record.origin,
+                    "created_at": record.created_at,
                 },
             )
         ],
@@ -97,7 +103,7 @@ def upsert_text_chunk(client: QdrantClient, record: TextChunkRecord, vector: Den
 
 
 def upsert_image(client: QdrantClient, record: ImageRecord, vector: list[float]) -> None:
-    point_id = _point_id(record.doc_id, 0)
+    point_id = compute_chunk_id(record.doc_id, 0)
     client.upsert(
         collection_name=IMAGE_COLLECTION,
         points=[
@@ -112,6 +118,8 @@ def upsert_image(client: QdrantClient, record: ImageRecord, vector: list[float])
                     "height": record.height,
                     "has_ocr_text": record.has_ocr_text,
                     "content_hash": record.content_hash,
+                    "origin": record.origin,
+                    "created_at": record.created_at,
                 },
             )
         ],

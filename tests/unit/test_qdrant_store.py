@@ -172,6 +172,41 @@ def test_find_image_by_doc_id_none_when_missing():
     assert find_image_by_doc_id(client, "no-such-doc") is None
 
 
+def test_upsert_text_chunk_writes_origin_and_created_at():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    record = TextChunkRecord(
+        doc_id="doc-origin", chunk_index=0, text="text", source_path="/o.txt",
+        file_type="txt", page=None, source_type="normal", content_hash="ho",
+        origin="upload", created_at="2026-08-25T00:00:00+00:00",
+    )
+    upsert_text_chunk(client, record, vec)
+
+    chunks = list_chunks_for_document(client, "doc-origin")
+    assert chunks[0]["origin"] == "upload"
+    assert chunks[0]["created_at"] == "2026-08-25T00:00:00+00:00"
+
+
+def test_upsert_image_writes_origin_and_created_at():
+    client = make_client()
+    record = ImageRecord(
+        doc_id="img-origin", source_path="/o.png", thumbnail_path="/thumb/o.jpg",
+        width=10, height=10, has_ocr_text=False, content_hash="ho2",
+        origin="watch", created_at="2026-08-25T00:00:00+00:00",
+    )
+    upsert_image(client, record, [0.2] * 512)
+
+    payload = find_image_by_doc_id(client, "img-origin")
+    assert payload["origin"] == "watch"
+    assert payload["created_at"] == "2026-08-25T00:00:00+00:00"
+
+
+def test_compute_chunk_id_is_deterministic_and_public():
+    from app.store.qdrant_client import compute_chunk_id
+    assert compute_chunk_id("d1", 0) == compute_chunk_id("d1", 0)
+    assert compute_chunk_id("d1", 0) != compute_chunk_id("d1", 1)
+
+
 def test_get_stats_reports_counts():
     client = make_client()
     vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
