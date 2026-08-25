@@ -10,20 +10,22 @@ from app.jobs.status import get_job_status
 
 
 @patch("app.api.routes.directories.get_queue")
-def test_index_directory_enqueues_job(mock_get_queue):
+def test_index_directory_enqueues_job(mock_get_queue, tmp_path):
     mock_job = MagicMock(id="rq-dir-job")
     mock_queue = MagicMock()
     mock_queue.enqueue.return_value = mock_job
     mock_get_queue.return_value = mock_queue
 
     client = TestClient(app)
-    response = client.post("/directories/index", json={"path": "/data/docs", "recursive": True, "watch": True})
+    response = client.post(
+        "/directories/index", json={"path": str(tmp_path), "recursive": True, "watch": True}
+    )
 
     assert response.status_code == 200
     assert response.json()["job_id"] == "rq-dir-job"
 
     args, kwargs = mock_queue.enqueue.call_args
-    assert args[1:4] == ("/data/docs", True, True)
+    assert args[1:4] == (str(tmp_path), True, True)
     generated_job_id = args[4]
     assert generated_job_id == kwargs["job_id"]
     assert kwargs["chunk_size"] is None
@@ -32,7 +34,7 @@ def test_index_directory_enqueues_job(mock_get_queue):
 
 
 @patch("app.api.routes.directories.get_queue")
-def test_index_directory_passes_custom_chunk_options(mock_get_queue):
+def test_index_directory_passes_custom_chunk_options(mock_get_queue, tmp_path):
     mock_job = MagicMock(id="rq-dir-job-2")
     mock_queue = MagicMock()
     mock_queue.enqueue.return_value = mock_job
@@ -42,19 +44,54 @@ def test_index_directory_passes_custom_chunk_options(mock_get_queue):
     response = client.post(
         "/directories/index",
         json={
-            "path": "/data/docs", "recursive": True, "watch": False,
+            "path": str(tmp_path), "recursive": True, "watch": False,
             "chunk_size": 800, "chunk_overlap": 100, "separators": ["\n\n", "---"],
         },
     )
 
     assert response.status_code == 200
     args, kwargs = mock_queue.enqueue.call_args
-    assert args[1:4] == ("/data/docs", True, False)
+    assert args[1:4] == (str(tmp_path), True, False)
     generated_job_id = args[4]
     assert generated_job_id == kwargs["job_id"]
     assert kwargs["chunk_size"] == 800
     assert kwargs["chunk_overlap"] == 100
     assert kwargs["separators"] == ["\n\n", "---"]
+
+
+@patch("app.api.routes.directories.get_queue")
+def test_index_directory_rejects_nonexistent_path(mock_get_queue, tmp_path):
+    """Regression test for Critical Finding 3: POST /directories/index
+    previously didn't validate that `path` exists, so a typo'd path
+    produced a silent 0/0 job status indistinguishable from success, and
+    (if watch=True) got persisted into Redis as a watched directory that
+    would later crash the worker on start. The path must be rejected with
+    400 before anything is enqueued or persisted."""
+    mock_get_queue.return_value = MagicMock()
+
+    client = TestClient(app)
+    response = client.post(
+        "/directories/index",
+        json={"path": str(tmp_path / "does-not-exist"), "recursive": True, "watch": False},
+    )
+
+    assert response.status_code == 400
+    mock_get_queue.return_value.enqueue.assert_not_called()
+
+
+@patch("app.api.routes.directories.get_queue")
+def test_index_directory_rejects_path_that_is_a_file(mock_get_queue, tmp_path):
+    file_path = tmp_path / "not_a_dir.txt"
+    file_path.write_text("x")
+    mock_get_queue.return_value = MagicMock()
+
+    client = TestClient(app)
+    response = client.post(
+        "/directories/index", json={"path": str(file_path), "recursive": True, "watch": False}
+    )
+
+    assert response.status_code == 400
+    mock_get_queue.return_value.enqueue.assert_not_called()
 
 
 @patch("app.api.routes.directories.get_queue")
@@ -82,6 +119,44 @@ def test_index_directory_sets_unlimited_job_timeout(mock_get_queue, tmp_path):
     assert response.status_code == 200
     _, kwargs = mock_queue.enqueue.call_args
     assert kwargs["job_timeout"] == -1
+
+
+@patch("app.api.routes.directories.get_queue")
+def test_delete_watch_removes_registered_directory(mock_get_queue):
+    """Regression test for Critical Finding 3: before this endpoint existed,
+    recovering from a bad/stale watch entry already persisted in Redis
+    (e.g. registered before path validation existed, or a directory that
+    was later deleted) required manual Redis surgery. DELETE
+    /directories/watch must remove it via the real unregister_watch/
+    register_watch Redis round-trip."""
+    redis_conn = fakeredis.FakeStrictRedis()
+    mock_queue = MagicMock()
+    mock_queue.connection = redis_conn
+    mock_get_queue.return_value = mock_queue
+
+    from app.ingest.watcher import list_watched_directories, register_watch
+
+    register_watch(redis_conn, "/data/stale", recursive=False)
+
+    client = TestClient(app)
+    response = client.request("DELETE", "/directories/watch", json={"path": "/data/stale"})
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "deleted"}
+    assert list_watched_directories(redis_conn) == []
+
+
+@patch("app.api.routes.directories.get_queue")
+def test_delete_watch_returns_404_when_not_registered(mock_get_queue):
+    redis_conn = fakeredis.FakeStrictRedis()
+    mock_queue = MagicMock()
+    mock_queue.connection = redis_conn
+    mock_get_queue.return_value = mock_queue
+
+    client = TestClient(app)
+    response = client.request("DELETE", "/directories/watch", json={"path": "/data/never-registered"})
+
+    assert response.status_code == 404
 
 
 @patch("app.jobs.tasks.ingest_file")

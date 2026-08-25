@@ -39,6 +39,10 @@ class IndexDirectoryRequest(BaseModel):
     separators: list[str] | None = None
 
 
+class RemoveWatchRequest(BaseModel):
+    path: str
+
+
 class JobStatusResponse(BaseModel):
     total: int
     processed: int

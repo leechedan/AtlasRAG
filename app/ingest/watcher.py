@@ -13,6 +13,7 @@ payload field instead.
 """
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -38,6 +39,8 @@ from app.store.qdrant_client import (
 SUPPORTED_EXTS = SUPPORTED_TEXT_EXTS | SUPPORTED_IMAGE_EXTS | {".csv", ".pdf"}
 WATCHED_DIRS_KEY = "watched_directories"
 
+logger = logging.getLogger(__name__)
+
 
 def register_watch(
     redis_conn,
@@ -59,6 +62,33 @@ def register_watch(
 
 def list_watched_directories(redis_conn) -> list[dict]:
     return [json.loads(raw) for raw in redis_conn.smembers(WATCHED_DIRS_KEY)]
+
+
+def unregister_watch(redis_conn, dir_path: str) -> bool:
+    """Remove a previously registered watch entry for dir_path.
+
+    Entries are stored as JSON-encoded dicts via register_watch's `sadd`
+    (the member is the full JSON string, including recursive/chunk
+    options, not just the bare path) -- so a plain
+    `redis_conn.srem(WATCHED_DIRS_KEY, dir_path)` would never match a
+    stored member. This scans the set's members, parses each one back to a
+    dict, and removes every member whose "path" equals dir_path (normally
+    there's at most one, but this doesn't assume it).
+
+    This is how a bad/stale watch entry already persisted in Redis (e.g.
+    one registered before Critical Finding 3's path validation existed, or
+    a directory that was later deleted) can be cleaned up without manual
+    Redis surgery -- see DELETE /directories/watch.
+
+    Returns True if at least one matching entry was removed.
+    """
+    removed = False
+    for raw in redis_conn.smembers(WATCHED_DIRS_KEY):
+        entry = json.loads(raw)
+        if entry.get("path") == dir_path:
+            redis_conn.srem(WATCHED_DIRS_KEY, raw)
+            removed = True
+    return removed
 
 
 def reconcile_directory(dir_path: str, recursive: bool, known_hashes: dict[str, str]) -> dict:
@@ -126,14 +156,39 @@ class DirectoryWatchManager:
         self._stop_event = threading.Event()
 
     def start(self) -> None:
+        # Start the (as yet empty) observer *before* scheduling any watched
+        # directory, then schedule each one individually, wrapped in its own
+        # try/except. This ordering matters: watchdog's
+        # BaseObserver.schedule() only starts a new watch's emitter
+        # immediately -- and so only raises synchronously, per-directory --
+        # when the observer is already alive (verified by reading
+        # watchdog.observers.api.BaseObserver.schedule in the installed
+        # watchdog package). Scheduling everything first and calling
+        # self._observer.start() once at the end (the previous approach)
+        # instead defers all the emitter-thread startup to that single
+        # start() call, which raises FileNotFoundError for the *whole*
+        # observer -- including every other, perfectly valid, watched
+        # directory -- the moment any one registered path doesn't exist
+        # (Critical Finding 3). Starting empty first means a bad entry can
+        # be caught and skipped without taking down the others.
+        self._observer.start()
+
         for entry in list_watched_directories(self._redis_conn):
             handler = _EventHandler(
                 chunk_size=entry.get("chunk_size"),
                 chunk_overlap=entry.get("chunk_overlap"),
                 separators=entry.get("separators"),
             )
-            self._observer.schedule(handler, entry["path"], recursive=entry["recursive"])
-        self._observer.start()
+            try:
+                self._observer.schedule(handler, entry["path"], recursive=entry["recursive"])
+            except OSError as exc:
+                logger.warning(
+                    "skipping watch for %r: %s (register a corrected path, and remove this "
+                    "one via DELETE /directories/watch)",
+                    entry["path"],
+                    exc,
+                )
+                continue
 
         thread = threading.Thread(target=self._reconcile_loop, daemon=True)
         thread.start()
