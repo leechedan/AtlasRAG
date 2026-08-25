@@ -814,6 +814,7 @@ git commit -m "feat: add Chinese-CLIP image/text embedder"
   - `def search_images(client, query_vector: list[float], top_k: int = 10) -> list[SearchHit]`
   - `def delete_document(client, doc_id: str) -> None`
   - `def get_existing_content_hash(client, doc_id: str) -> str | None`
+  - `def list_chunks_for_document(client, doc_id: str) -> list[dict]`（scroll `text_chunks` collection 按 `doc_id` 过滤，按 `chunk_index` 升序返回每条的完整 payload；供 Task 24 的"查看已入库文档分片"接口用）
   - `def get_stats(client) -> dict`
 
 - [ ] **Step 1: 写测试（用 qdrant-client 的内存模式，不需要真实 Qdrant 服务）**
@@ -829,6 +830,7 @@ from app.store.qdrant_client import (
     get_existing_content_hash,
     get_qdrant_client,
     get_stats,
+    list_chunks_for_document,
     search_images,
     search_text_hybrid,
     upsert_image,
@@ -897,6 +899,27 @@ def test_delete_document_removes_chunks():
     upsert_text_chunk(client, record, vec)
     delete_document(client, "doc3")
     assert get_existing_content_hash(client, "doc3") is None
+
+
+def test_list_chunks_for_document_returns_ordered_payloads():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    for idx in (2, 0, 1):
+        record = TextChunkRecord(
+            doc_id="doc5", chunk_index=idx, text=f"chunk-{idx}", source_path="/e.txt",
+            file_type="txt", page=None, source_type="normal", content_hash="h5",
+        )
+        upsert_text_chunk(client, record, vec)
+
+    chunks = list_chunks_for_document(client, "doc5")
+
+    assert [c["chunk_index"] for c in chunks] == [0, 1, 2]
+    assert [c["text"] for c in chunks] == ["chunk-0", "chunk-1", "chunk-2"]
+
+
+def test_list_chunks_for_document_empty_when_missing():
+    client = make_client()
+    assert list_chunks_for_document(client, "unknown-doc") == []
 
 
 def test_get_stats_reports_counts():
@@ -1085,6 +1108,18 @@ def get_existing_content_hash(client: QdrantClient, doc_id: str) -> str | None:
     return None
 
 
+def list_chunks_for_document(client: QdrantClient, doc_id: str) -> list[dict]:
+    flt = models.Filter(must=[models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))])
+    payloads: list[dict] = []
+    offset = None
+    while True:
+        points, offset = client.scroll(collection_name=TEXT_COLLECTION, scroll_filter=flt, limit=100, offset=offset)
+        payloads.extend(p.payload for p in points)
+        if offset is None:
+            break
+    return sorted(payloads, key=lambda p: p["chunk_index"])
+
+
 def get_stats(client: QdrantClient) -> dict:
     text_info = client.get_collection(TEXT_COLLECTION)
     image_info = client.get_collection(IMAGE_COLLECTION)
@@ -1104,7 +1139,7 @@ def get_default_client() -> QdrantClient:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `cd retrieval-service && .venv/bin/pytest tests/unit/test_qdrant_store.py -v`
-Expected: 6 passed
+Expected: 8 passed
 
 - [ ] **Step 5: Commit**
 
@@ -3550,6 +3585,233 @@ git commit -m "test: add end-to-end ingest and search integration test"
 
 ---
 
+### Task 24: 分片效果查看接口（入库前预览 + 已入库文档查询）
+
+**Files:**
+- Create: `retrieval-service/app/api/routes/chunks.py`
+- Modify: `retrieval-service/app/api/schemas.py`
+- Modify: `retrieval-service/app/api/main.py`
+- Test: `retrieval-service/tests/unit/test_api_chunks.py`
+
+**Interfaces:**
+- Consumes: `chunk_text`, `chunk_csv_rows`（Task 4）; `parse_text_file`（Task 8）; `parse_csv_file`（Task 9）; `parse_image`（Task 10）; `parse_pdf`（Task 11）; `get_store_client`（Task 15）; `list_chunks_for_document`（Task 7）
+- Produces:
+  - `POST /chunks/preview`（multipart，`text: str = Form(None)` 和 `file: UploadFile = File(None)` 二选一，另加可选 Form 字段 `chunk_size`/`chunk_overlap`/`separators`）→ `{chunks: list[str], count: int}`，**不写入 Qdrant、不占用 embedding 模型**，纯粹跑分词/切分逻辑，用于入库前调参
+  - `GET /documents/{doc_id}/chunks` → `{chunks: [{chunk_index, text, page, source_type, file_type}], count: int}`，查已入库文档实际落到 Qdrant 里的分片
+
+- [ ] **Step 1: 写测试**
+
+```python
+# tests/unit/test_api_chunks.py
+import io
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+
+from app.api.deps import get_store_client
+from app.api.main import app
+
+
+def test_preview_chunks_from_raw_text():
+    client = TestClient(app)
+    response = client.post(
+        "/chunks/preview",
+        data={"text": "A" * 250, "chunk_size": "100", "chunk_overlap": "20", "separators": ""},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == len(body["chunks"])
+    assert all(len(c) <= 100 for c in body["chunks"])
+
+
+def test_preview_chunks_from_uploaded_txt_file():
+    client = TestClient(app)
+    response = client.post(
+        "/chunks/preview",
+        files={"file": ("note.txt", io.BytesIO("你好，这是一段测试文字。" * 20), "text/plain")},
+        data={"chunk_size": "50", "chunk_overlap": "0", "separators": ""},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] > 1
+
+
+def test_preview_chunks_requires_exactly_one_of_text_or_file():
+    client = TestClient(app)
+    response = client.post("/chunks/preview", data={})
+    assert response.status_code == 400
+
+
+def test_get_document_chunks_returns_stored_chunks():
+    app.dependency_overrides[get_store_client] = lambda: object()
+    with patch(
+        "app.api.routes.chunks.list_chunks_for_document",
+        return_value=[
+            {"chunk_index": 0, "text": "第一块", "page": None, "source_type": "normal", "file_type": "txt"},
+            {"chunk_index": 1, "text": "第二块", "page": None, "source_type": "normal", "file_type": "txt"},
+        ],
+    ):
+        client = TestClient(app)
+        response = client.get("/documents/doc-abc/chunks")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 2
+    assert body["chunks"][0]["text"] == "第一块"
+    app.dependency_overrides.clear()
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `cd retrieval-service && .venv/bin/pytest tests/unit/test_api_chunks.py -v`
+Expected: FAIL，`ModuleNotFoundError: No module named 'app.api.routes.chunks'`
+
+- [ ] **Step 3: 实现**
+
+在 `app/api/schemas.py` 追加：
+
+```python
+class ChunkPreviewResponse(BaseModel):
+    chunks: list[str]
+    count: int
+
+
+class DocumentChunkOut(BaseModel):
+    chunk_index: int
+    text: str
+    page: int | None
+    source_type: str
+    file_type: str
+
+
+class DocumentChunksResponse(BaseModel):
+    chunks: list[DocumentChunkOut]
+    count: int
+```
+
+```python
+# app/api/routes/chunks.py
+import io
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+
+from app.api.deps import get_store_client
+from app.api.schemas import ChunkPreviewResponse, DocumentChunksResponse
+from app.ingest.chunking import chunk_csv_rows, chunk_text
+from app.ingest.parsers.csv_parser import parse_csv_file
+from app.ingest.parsers.image_parser import parse_image
+from app.ingest.parsers.pdf_parser import parse_pdf
+from app.ingest.parsers.text_parser import parse_text_file
+from app.store.qdrant_client import list_chunks_for_document
+
+router = APIRouter()
+
+TEXT_EXTS = {".txt", ".md"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
+
+
+def _extract_chunks_from_file(filename: str, content: bytes, chunk_size, chunk_overlap, separators) -> list[str]:
+    import tempfile
+
+    ext = Path(filename).suffix.lower()
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=True) as tmp:
+        tmp.write(content)
+        tmp.flush()
+        tmp_path = Path(tmp.name)
+
+        if ext in TEXT_EXTS:
+            text = parse_text_file(tmp_path)
+            return chunk_text(text, chunk_size, chunk_overlap, separators)
+        if ext == ".csv":
+            rows, header = parse_csv_file(tmp_path)
+            return chunk_csv_rows(rows, header, max_chars=chunk_size)
+        if ext == ".pdf":
+            pages = parse_pdf(tmp_path)
+            chunks: list[str] = []
+            for page in pages:
+                chunks.extend(chunk_text(page.text, chunk_size, chunk_overlap, separators))
+            return chunks
+        if ext in IMAGE_EXTS:
+            from PIL import Image
+
+            image = Image.open(tmp_path).convert("RGB")
+            parsed = parse_image(image, doc_id="preview")
+            return chunk_text(parsed.ocr_text, chunk_size, chunk_overlap, separators)
+
+        raise HTTPException(status_code=400, detail=f"unsupported file extension: {ext}")
+
+
+@router.post("/chunks/preview", response_model=ChunkPreviewResponse)
+async def preview_chunks(
+    text: str | None = Form(None),
+    file: UploadFile | None = File(None),
+    chunk_size: int | None = Form(None),
+    chunk_overlap: int | None = Form(None),
+    separators: list[str] | None = Form(None),
+):
+    if (text is None) == (file is None):
+        raise HTTPException(status_code=400, detail="provide exactly one of 'text' or 'file'")
+
+    if text is not None:
+        chunks = chunk_text(text, chunk_size, chunk_overlap, separators or None)
+    else:
+        content = await file.read()
+        chunks = _extract_chunks_from_file(file.filename, content, chunk_size, chunk_overlap, separators or None)
+
+    return ChunkPreviewResponse(chunks=chunks, count=len(chunks))
+
+
+@router.get("/documents/{doc_id}/chunks", response_model=DocumentChunksResponse)
+def get_document_chunks(doc_id: str, store=Depends(get_store_client)):
+    payloads = list_chunks_for_document(store, doc_id)
+    chunks = [
+        {
+            "chunk_index": p["chunk_index"],
+            "text": p["text"],
+            "page": p.get("page"),
+            "source_type": p["source_type"],
+            "file_type": p["file_type"],
+        }
+        for p in payloads
+    ]
+    return DocumentChunksResponse(chunks=chunks, count=len(chunks))
+```
+
+Modify `app/api/main.py`：
+
+```python
+# app/api/main.py
+from fastapi import FastAPI
+
+from app.api.routes import chunks, collections, directories, documents, health, jobs, search
+
+app = FastAPI(title="Multimodal Retrieval Service")
+app.include_router(health.router)
+app.include_router(search.router)
+app.include_router(documents.router)
+app.include_router(directories.router)
+app.include_router(jobs.router)
+app.include_router(collections.router)
+app.include_router(chunks.router)
+```
+
+**注意：** `separators` 是 Form 字段，客户端不传时 FastAPI 会给出空 list `[]` 而不是 `None`（和 `chunk_text` 期望的"不传就是 None 回落默认值"语义不一致），所以路由里统一用 `separators or None` 转一次。
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `cd retrieval-service && .venv/bin/pytest tests/unit/test_api_chunks.py -v`
+Expected: 4 passed
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/api/routes/chunks.py app/api/schemas.py app/api/main.py tests/unit/test_api_chunks.py
+git commit -m "feat: add chunk preview and per-document chunk inspection endpoints"
+```
+
+---
+
 ## Self-Review 记录
 
 **Spec 覆盖检查：**
@@ -3566,6 +3828,7 @@ git commit -m "test: add end-to-end ingest and search integration test"
 - Docker Compose 部署(spec §6) → Task 22
 - Admin UI(补充需求) → Task 20
 - 切分参数动态可配 + 自定义分隔符切分(用户复审时追加需求) → Task 1(`chunk_separators`全局默认) / Task 4(`chunk_text`接受`separators`覆盖) / Task 12(`ChunkOptions`贯穿`ingest_file`) / Task 13(job函数透传) / Task 14(watch目录持久化切分配置) / Task 17(上传接口Form字段) / Task 18(目录入库接口JSON字段) / Task 20(Admin UI输入框)
+- 查看分片效果(用户复审时追加需求) → Task 7(`list_chunks_for_document`) / Task 24(`POST /chunks/preview` 入库前预览 + `GET /documents/{doc_id}/chunks` 已入库查询)
 
 **占位符扫描：** 未发现 TBD/TODO；Task 18 中途出现的 job_id 不一致问题已在同一任务的 Step 3b 里发现并修正，不是遗留占位符。
 
@@ -3573,7 +3836,7 @@ git commit -m "test: add end-to-end ingest and search integration test"
 
 **类型一致性检查：** `DenseSparseVector`（Task 5 定义）在 Task 7/12/16 中字段名 `dense`/`sparse` 全程一致；`IngestResult` 字段名 `doc_id/status/chunks_written/error` 在 Task 12/13/23 引用处一致；`SearchHit.payload` 在 Task 7/16 中一致为 dict；`ChunkOptions`（Task 12 定义，字段 `chunk_size/chunk_overlap/separators`）在 Task 13/14 都是导入同一个类使用，字段名和默认值（均为 `None`）一致；watcher 里 Redis 存的 watch 目录记录字典键名 `chunk_size/chunk_overlap/separators` 与 `register_watch` 参数名、`ChunkOptions` 字段名三处保持一致，没有出现改名不同步的情况。
 
-**范围检查：** 单个 plan 覆盖 23 个 task，规模偏大但都围绕同一个内聚系统（检索服务），没有可独立拆分成不同产品的子系统，符合"一个 spec 对应一个 plan"的判断。
+**范围检查：** 单个 plan 覆盖 24 个 task，规模偏大但都围绕同一个内聚系统（检索服务），没有可独立拆分成不同产品的子系统，符合"一个 spec 对应一个 plan"的判断。
 
 ---
 
