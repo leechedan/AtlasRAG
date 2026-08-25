@@ -28,9 +28,9 @@
 **Interfaces:**
 - Produces: `compute_length_metrics(chunks: list[str], min_chars: int, max_chars: int) -> LengthReport`，`LengthReport` dataclass 字段：`count, min_chars, max_chars, mean_chars, median_chars, stdev_chars, out_of_range_count, out_of_range_ratio`（均为普通属性，非 property）。
 
-- [ ] **Step 1: 创建 `app/eval/__init__.py`（空文件）**
+- [x] **Step 1: 创建 `app/eval/__init__.py`（空文件）**
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 ```python
 # tests/unit/test_eval_length_metrics.py
@@ -63,12 +63,12 @@ def test_compute_length_metrics_single_chunk_has_zero_stdev():
     assert report.stdev_chars == 0.0
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [x] **Step 3: 运行测试确认失败**
 
 Run: `pytest tests/unit/test_eval_length_metrics.py -v`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.eval.length_metrics'`
 
-- [ ] **Step 4: 写实现**
+- [x] **Step 4: 写实现**
 
 ```python
 # app/eval/length_metrics.py
@@ -109,12 +109,12 @@ def compute_length_metrics(chunks: list[str], min_chars: int, max_chars: int) ->
     )
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [x] **Step 5: 运行测试确认通过**
 
 Run: `pytest tests/unit/test_eval_length_metrics.py -v`
 Expected: PASS（3 passed）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add app/eval/__init__.py app/eval/length_metrics.py tests/unit/test_eval_length_metrics.py
@@ -138,14 +138,14 @@ git commit -m "feat: add chunk length distribution eval metric"
   - `detect_structure_violations(text: str, chunks: list[str], chunk_overlap: int) -> StructureReport`（`StructureReport` 字段：`total_chunks, total_protected_regions, truncated_regions, chunks_with_heading_expected, chunks_missing_heading`，外加 `truncated_region_ratio`/`missing_heading_ratio` 两个 property）
   - Task 5（runner.py）会 import 并调用 `detect_structure_violations`。
 
-- [ ] **Step 1: 在 `requirements.txt` 新增依赖**
+- [x] **Step 1: 在 `requirements.txt` 新增依赖**
 
 ```
 markdown-it-py==3.0.0
 ```
 （追加到文件末尾即可，不要求特定顺序）
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 ```python
 # tests/unit/test_eval_structure_metrics.py
@@ -235,12 +235,12 @@ def test_detect_structure_violations_flags_missing_heading_context_on_continuati
     assert report.chunks_missing_heading == 2
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [x] **Step 3: 运行测试确认失败**
 
 Run: `pytest tests/unit/test_eval_structure_metrics.py -v`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.eval.structure_metrics'`
 
-- [ ] **Step 4: 写实现**
+- [x] **Step 4: 写实现**
 
 ```python
 # app/eval/structure_metrics.py
@@ -388,12 +388,12 @@ def detect_structure_violations(
     )
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [x] **Step 5: 运行测试确认通过**
 
 Run: `pytest tests/unit/test_eval_structure_metrics.py -v`
 Expected: PASS（7 passed）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add requirements.txt app/eval/structure_metrics.py tests/unit/test_eval_structure_metrics.py
@@ -412,7 +412,7 @@ git commit -m "feat: add markdown structure violation eval metric"
 - Consumes: 无（`Embedder` 是本模块定义的 `Protocol`，调用方注入任意满足 `embed(texts: list[str]) -> list[<has .dense>]` 的对象；真实场景注入 `app.models.embeddings.TextEmbedder`，其 `embed()` 返回的 `DenseSparseVector` 有 `.dense: list[float]` 字段，天然满足这个协议）
 - Produces: `split_sentences(text: str) -> list[str]`，`compute_coherence(chunks: list[str], embedder: Embedder) -> CoherenceReport`（字段：`chunk_count, scored_chunk_count, mean_coherence`）。Task 5（runner.py）会 import 并调用两者。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # tests/unit/test_eval_coherence_metrics.py
@@ -485,12 +485,12 @@ def test_compute_coherence_empty_chunks_list():
     assert report.mean_coherence == 0.0
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pytest tests/unit/test_eval_coherence_metrics.py -v`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.eval.coherence_metrics'`
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 ```python
 # app/eval/coherence_metrics.py
@@ -557,12 +557,12 @@ def compute_coherence(chunks: list[str], embedder: Embedder) -> CoherenceReport:
     return CoherenceReport(len(chunks), len(chunk_scores), mean_coherence)
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pytest tests/unit/test_eval_coherence_metrics.py -v`
 Expected: PASS（6 passed）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add app/eval/coherence_metrics.py tests/unit/test_eval_coherence_metrics.py
@@ -581,7 +581,7 @@ git commit -m "feat: add chunk semantic coherence eval metric"
 - Consumes: 无
 - Produces: `RetrievalQuery`（字段：`query: str, expected_chunk_ids: list[str]`）、`evaluate_retrieval(queries: list[RetrievalQuery], retrieve_fn: Callable[[str, int], list[str]], k_values: list[int] | None = None) -> RetrievalReport`（字段：`query_count, recall_at_k: dict[int, float], mrr: float`）、`load_qa_file(path: str) -> list[RetrievalQuery]`。Task 5（runner.py）与 `scripts/eval_chunk_quality.py`（Task 6）都会用到这三者。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # tests/unit/test_eval_retrieval_metrics.py
@@ -673,12 +673,12 @@ def test_load_qa_file_parses_json_into_retrieval_queries(tmp_path):
     assert queries == [RetrievalQuery(query="什么是切片", expected_chunk_ids=["doc1:0", "doc1:1"])]
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pytest tests/unit/test_eval_retrieval_metrics.py -v`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.eval.retrieval_metrics'`
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 ```python
 # app/eval/retrieval_metrics.py
@@ -751,12 +751,12 @@ def load_qa_file(path: str) -> list[RetrievalQuery]:
     ]
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pytest tests/unit/test_eval_retrieval_metrics.py -v`
 Expected: PASS（7 passed）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add app/eval/retrieval_metrics.py tests/unit/test_eval_retrieval_metrics.py
@@ -785,7 +785,7 @@ git commit -m "feat: add retrieval Recall@K/MRR eval metric"
   - `format_summary_table(aggregate: dict) -> str`
   - `run(input_dir: str, chunk_size: int, chunk_overlap: int, min_chars: int, max_chars: int, run_semantic: bool = True, embedder=None, qa_file: str | None = None, retrieve_fn=None) -> dict`（返回 `{"documents": [...], "aggregate": {...}}`）。Task 6（CLI）会 import 并调用 `run`、`write_report`、`format_summary_table`。
 
-- [ ] **Step 1: 写失败测试（report.py）**
+- [x] **Step 1: 写失败测试（report.py）**
 
 ```python
 # tests/unit/test_eval_report.py
@@ -811,12 +811,12 @@ def test_format_summary_table_renders_markdown_table_with_formatted_floats():
     assert "| truncated_region_ratio | 0.5000 |" in table
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pytest tests/unit/test_eval_report.py -v`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.eval.report'`
 
-- [ ] **Step 3: 写实现（report.py）**
+- [x] **Step 3: 写实现（report.py）**
 
 ```python
 # app/eval/report.py
@@ -841,12 +841,12 @@ def format_summary_table(aggregate: dict) -> str:
     return "\n".join(lines)
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pytest tests/unit/test_eval_report.py -v`
 Expected: PASS（2 passed）
 
-- [ ] **Step 5: 写失败测试（runner.py）**
+- [x] **Step 5: 写失败测试（runner.py）**
 
 ```python
 # tests/unit/test_eval_runner.py
@@ -945,12 +945,12 @@ def test_run_computes_retrieval_metrics_when_qa_file_and_retrieve_fn_given(tmp_p
     assert report["aggregate"]["retrieval"]["mrr"] == 1.0
 ```
 
-- [ ] **Step 6: 运行测试确认失败**
+- [x] **Step 6: 运行测试确认失败**
 
 Run: `pytest tests/unit/test_eval_runner.py -v`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.eval.runner'`
 
-- [ ] **Step 7: 写实现（runner.py）**
+- [x] **Step 7: 写实现（runner.py）**
 
 ```python
 # app/eval/runner.py
@@ -1057,12 +1057,12 @@ def run(
     return {"documents": document_reports, "aggregate": aggregate}
 ```
 
-- [ ] **Step 8: 运行测试确认通过**
+- [x] **Step 8: 运行测试确认通过**
 
 Run: `pytest tests/unit/test_eval_runner.py tests/unit/test_eval_report.py -v`
 Expected: PASS（6 passed）
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
 ```bash
 git add app/eval/report.py app/eval/runner.py tests/unit/test_eval_report.py tests/unit/test_eval_runner.py
@@ -1081,7 +1081,7 @@ git commit -m "feat: add chunk quality report writer and eval runner orchestrati
 - Consumes: `app.eval.runner.run`（Task 5）, `app.eval.report.write_report` / `format_summary_table`（Task 5）, `app.config.settings`（已存在，`chunk_size`/`chunk_overlap` 默认值）
 - Produces: `main(argv: list[str] | None = None) -> int`，供 `python -m scripts.eval_chunk_quality ...` 调用；同时是 CLI 测试的直接调用入口。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 用 `monkeypatch` 替换 `app.eval.runner.run` 与 `app.eval.report.write_report`，只验证 CLI 的参数解析/默认值/wiring 逻辑，不触发真实 embedder/Qdrant。
 
@@ -1188,12 +1188,12 @@ def test_main_requires_retrieve_fn_wiring_when_qa_file_given(monkeypatch, tmp_pa
     assert captured_kwargs["retrieve_fn"] is not None
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `pytest tests/unit/test_eval_cli.py -v`
 Expected: FAIL，`ModuleNotFoundError: No module named 'scripts.eval_chunk_quality'`
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 ```python
 # scripts/eval_chunk_quality.py
@@ -1281,17 +1281,17 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `pytest tests/unit/test_eval_cli.py -v`
 Expected: PASS（3 passed）
 
-- [ ] **Step 5: 跑一遍完整 eval 单测套件确认没有互相破坏**
+- [x] **Step 5: 跑一遍完整 eval 单测套件确认没有互相破坏**
 
 Run: `pytest tests/unit/test_eval_*.py -v`
 Expected: 全部 PASS（length 3 + structure 7 + coherence 6 + retrieval 7 + report 2 + runner 4 + cli 3 = 32 passed）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add scripts/eval_chunk_quality.py tests/unit/test_eval_cli.py
