@@ -54,7 +54,7 @@ ImageSummary {
 复用现有 `list_chunks_for_document`，直接暴露为 API，返回该文档全部分片（按 `chunk_index` 排序），每条附带 `chunk_id`。`doc_id` 在 `text_chunks`/`images` 两个 collection 里都找不到时返回 404；文档存在但没有文本分片（纯图片文档）返回空列表。
 
 **`GET /chunks?cursor=&limit=`**
-跨文档全局浏览。基于 Qdrant `scroll` 原生的 offset 游标做分页（Qdrant 的 scroll offset 本身是不透明的 point id，不是数字页码），响应里返回 `next_cursor`（为空表示到底）。`cursor` 非法/过期 → 400。
+跨文档全局浏览。基于 Qdrant `scroll` 原生的 offset 游标做分页（Qdrant 的 scroll offset 本身是不透明的 point id，不是数字页码），响应里返回 `next_cursor`（为空表示到底）。`cursor` 指向的记录不存在（如翻页间隙里记录被删除，或客户端传了一个乱造的值）时，Qdrant 的 scroll 本身就把它当作"从头开始找不到匹配位置"处理，直接返回空列表——不是错误，因此这里也不视为错误，原样返回空 `chunks` + `next_cursor: null`（实测 verified against qdrant-client 1.12.1 的 `:memory:` local 模式：不存在/格式错乱的 offset 都不抛异常，只是返回空结果）。
 
 **`chunk_id`**：复用现有 `_point_id(doc_id, chunk_index)`（= Qdrant point id 的 md5 值），作为分片的唯一标识，贯穿分片列表和检索响应。
 
@@ -86,7 +86,7 @@ SearchHitOut {
 ## 6. 错误处理
 
 - `GET /documents/{doc_id}/chunks`：`doc_id` 不存在 → 404；存在但无文本分片 → 空列表
-- `GET /chunks`：`cursor` 非法/过期 → 400
+- `GET /chunks`：`cursor` 不存在/格式错乱 → 不报错，返回空 `chunks` + `next_cursor: null`（Qdrant scroll 原生行为，见第3节）
 - 任意接口遇到空 collection → 返回空列表，不报错（与现有 `/search` 行为一致）
 
 ## 7. 测试方案
