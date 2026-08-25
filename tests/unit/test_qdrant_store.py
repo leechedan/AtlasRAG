@@ -4,6 +4,7 @@ from app.store.qdrant_client import (
     TextChunkRecord,
     delete_document,
     ensure_collections,
+    find_doc_id_by_source_path,
     get_existing_content_hash,
     get_qdrant_client,
     get_stats,
@@ -64,6 +65,22 @@ def test_get_existing_content_hash_returns_hash_after_upsert():
     )
     upsert_text_chunk(client, record, vec)
     assert get_existing_content_hash(client, "doc2") == "hash-b"
+
+
+def test_find_doc_id_by_source_path_none_when_missing():
+    client = make_client()
+    assert find_doc_id_by_source_path(client, "/no/such/path.txt") is None
+
+
+def test_find_doc_id_by_source_path_returns_doc_id_after_upsert():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    record = TextChunkRecord(
+        doc_id="doc6", chunk_index=0, text="text", source_path="/g.txt",
+        file_type="txt", page=None, source_type="normal", content_hash="h6",
+    )
+    upsert_text_chunk(client, record, vec)
+    assert find_doc_id_by_source_path(client, "/g.txt") == "doc6"
 
 
 def test_delete_document_removes_chunks():
