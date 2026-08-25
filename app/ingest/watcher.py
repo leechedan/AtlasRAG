@@ -111,6 +111,12 @@ class _EventHandler(FileSystemEventHandler):
             doc_id = find_doc_id_by_source_path(client, event.src_path)
             if doc_id is not None:
                 delete_ingested_document(doc_id, client=client)
+            # Known limitation: a scanned PDF page's image record is stored
+            # under its own composite doc_id (f"{doc_id}:page{N}", source_path
+            # f"{path}#page={N}") — see pipeline._ingest_scanned_pdf_page. This
+            # lookup only resolves the plain path, so those per-page image
+            # records are not cascaded and become orphaned in the images
+            # collection when the source PDF is deleted.
 
 
 class DirectoryWatchManager:
