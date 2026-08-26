@@ -10,6 +10,7 @@ from app.eval.length_metrics import compute_length_metrics
 from app.eval.retrieval_metrics import evaluate_retrieval, load_qa_file
 from app.eval.structure_metrics import detect_structure_violations
 from app.ingest.chunking import chunk_text
+from app.ingest.markdown_chunker import chunk_markdown_structured
 
 SUPPORTED_EXTS = {".md", ".txt"}
 
@@ -30,7 +31,10 @@ def run(
     embedder: Embedder | None = None,
     qa_file: str | None = None,
     retrieve_fn=None,
+    chunker: str = "char",
 ) -> dict:
+    if chunker not in ("char", "structured"):
+        raise ValueError(f"未知 chunker: {chunker!r}，可选 'char' 或 'structured'")
     if run_semantic and embedder is None:
         raise ValueError("run_semantic=True 时必须提供 embedder")
     if qa_file and retrieve_fn is None:
@@ -47,7 +51,15 @@ def run(
 
     for path in _iter_documents(input_dir):
         text = path.read_text(encoding="utf-8")
-        chunks = chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        if chunker == "structured":
+            chunks = [
+                c.content
+                for c in chunk_markdown_structured(
+                    text, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                )
+            ]
+        else:
+            chunks = chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         all_chunks.extend(chunks)
 
         structure_report = detect_structure_violations(text, chunks, chunk_overlap)

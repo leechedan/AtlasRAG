@@ -91,3 +91,38 @@ def test_run_computes_retrieval_metrics_when_qa_file_and_retrieve_fn_given(tmp_p
     )
 
     assert report["aggregate"]["retrieval"]["mrr"] == 1.0
+
+
+def test_run_uses_structured_chunker_when_selected(tmp_path):
+    _write(
+        tmp_path,
+        "a.md",
+        "## Section\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\ntext after table\n",
+    )
+
+    report = run(
+        input_dir=str(tmp_path),
+        chunk_size=1000,
+        chunk_overlap=0,
+        min_chars=0,
+        max_chars=1000,
+        run_semantic=False,
+        chunker="structured",
+    )
+
+    assert report["aggregate"]["document_count"] == 1
+    assert report["aggregate"]["chunk_count"] == 1
+    assert report["aggregate"]["truncated_region_ratio"] == 0.0
+
+
+def test_run_rejects_unknown_chunker():
+    with pytest.raises(ValueError):
+        run(
+            input_dir=".",
+            chunk_size=1000,
+            chunk_overlap=0,
+            min_chars=0,
+            max_chars=1000,
+            run_semantic=False,
+            chunker="not-a-real-chunker",
+        )
