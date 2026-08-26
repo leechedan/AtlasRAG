@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     text_embed_model: str = "BAAI/bge-m3"
     clip_model_name: str = "OFA-Sys/chinese-clip-vit-base-patch16"
     ocr_lang: str = "ch"
+    mineru_backend: str = "pipeline"
+    mineru_timeout_seconds: int = 600
     watch_reconcile_interval_seconds: int = 3600
     allowed_index_roots: list[Path] = []
     log_level: str = "INFO"
@@ -27,6 +29,10 @@ class Settings(BaseSettings):
     @property
     def thumbnails_dir(self) -> Path:
         return self.data_dir / "thumbnails"
+
+    @property
+    def extracted_images_dir(self) -> Path:
+        return self.data_dir / "extracted_images"
 
     @property
     def effective_allowed_index_roots(self) -> list[Path]:
@@ -44,3 +50,4 @@ class Settings(BaseSettings):
 settings = Settings()
 settings.uploads_dir.mkdir(parents=True, exist_ok=True)
 settings.thumbnails_dir.mkdir(parents=True, exist_ok=True)
+settings.extracted_images_dir.mkdir(parents=True, exist_ok=True)

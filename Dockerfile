@@ -20,6 +20,8 @@ RUN pip install --no-cache-dir torch \
     --index-url https://download.pytorch.org/whl/cu130 \
     --extra-index-url https://mirrors.aliyun.com/pypi/simple/
 
+# mineru[pipeline] 依赖的 opencv 需要 libgl1/libglib2.0-0，上面 apt 安装步骤已包含，
+# 若未来升级 mineru 版本发现新的系统依赖缺失，在这里补充 apt 包。
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
