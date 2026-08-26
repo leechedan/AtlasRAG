@@ -55,6 +55,31 @@ def test_upsert_and_search_image():
     assert hits[0].payload["doc_id"] == "img1"
 
 
+def test_upsert_image_stores_image_path():
+    client = make_client()
+    record = ImageRecord(
+        doc_id="img-full", source_path="/full.png", thumbnail_path="/thumb/full.jpg",
+        width=100, height=100, has_ocr_text=False, content_hash="hfull",
+        image_path="/originals/full.jpg",
+    )
+    upsert_image(client, record, [0.2] * 512)
+
+    payload = find_image_by_doc_id(client, "img-full")
+    assert payload["image_path"] == "/originals/full.jpg"
+
+
+def test_upsert_image_defaults_image_path_to_none_when_omitted():
+    client = make_client()
+    record = ImageRecord(
+        doc_id="img-nopath", source_path="/x.png", thumbnail_path="/thumb/x.jpg",
+        width=10, height=10, has_ocr_text=False, content_hash="hx2",
+    )
+    upsert_image(client, record, [0.2] * 512)
+
+    payload = find_image_by_doc_id(client, "img-nopath")
+    assert payload["image_path"] is None
+
+
 def test_get_existing_content_hash_none_when_missing():
     client = make_client()
     assert get_existing_content_hash(client, "unknown-doc") is None
@@ -361,6 +386,37 @@ def test_list_all_documents_attaches_scanned_pdf_page_image_by_prefix():
     assert docs[0]["doc_id"] == "doc-pdf"
     assert len(docs[0]["related_images"]) == 1
     assert docs[0]["related_images"][0]["doc_id"] == "doc-pdf:page1"
+
+
+def test_list_all_documents_attaches_extracted_pdf_image_by_prefix():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    upsert_text_chunk(
+        client,
+        TextChunkRecord(
+            doc_id="doc-pdf2", chunk_index=0, text="text with figure", source_path="/report.pdf",
+            file_type="pdf", page=None, source_type="normal", content_hash="hpdf2",
+            origin="upload", created_at="2026-08-25T00:00:00+00:00",
+        ),
+        vec,
+    )
+    upsert_image(
+        client,
+        ImageRecord(
+            doc_id="doc-pdf2:img1", source_path="/report.pdf#img=1",
+            image_path="/originals/doc-pdf2:img1.jpg",
+            thumbnail_path="/thumb/doc-pdf2:img1.jpg", width=400, height=300, has_ocr_text=False,
+            content_hash="hpdf2", origin="upload", created_at="2026-08-25T00:00:00+00:00",
+        ),
+        [0.2] * 512,
+    )
+
+    docs = list_all_documents(client)
+
+    assert len(docs) == 1
+    assert docs[0]["doc_id"] == "doc-pdf2"
+    assert len(docs[0]["related_images"]) == 1
+    assert docs[0]["related_images"][0]["doc_id"] == "doc-pdf2:img1"
 
 
 def test_list_all_documents_lists_orphan_image_as_its_own_document():

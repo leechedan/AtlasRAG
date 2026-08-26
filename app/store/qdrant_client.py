@@ -62,6 +62,7 @@ class ImageRecord:
     content_hash: str
     origin: str | None = None
     created_at: str | None = None
+    image_path: str | None = None
 
 
 @dataclass
@@ -127,6 +128,7 @@ def upsert_image(client: QdrantClient, record: ImageRecord, vector: list[float])
                     "content_hash": record.content_hash,
                     "origin": record.origin,
                     "created_at": record.created_at,
+                    "image_path": record.image_path,
                 },
             )
         ],
@@ -269,8 +271,8 @@ def list_all_documents(client: QdrantClient) -> list[dict]:
         }
 
         parent_id = None
-        if ":page" in img_doc_id:
-            candidate = img_doc_id.split(":page")[0]
+        if ":" in img_doc_id:
+            candidate = img_doc_id.split(":", 1)[0]
             if candidate in text_docs:
                 parent_id = candidate
         elif img_doc_id in text_docs:
