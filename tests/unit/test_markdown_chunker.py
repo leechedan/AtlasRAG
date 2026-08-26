@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.eval.structure_metrics import detect_structure_violations
 from app.ingest.markdown_chunker import NO_HEADING_PLACEHOLDER, chunk_markdown_structured
 
@@ -175,3 +177,30 @@ def test_structured_chunks_never_truncate_protected_regions_per_eval_metrics():
         HIERARCHY_MD, [c.content for c in chunks], chunk_overlap=0
     )
     assert report.truncated_regions == 0
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+REAL_DOC = (
+    REPO_ROOT
+    / "data"
+    / "uploads"
+    / "upload_2026-08-25T12_57_30.283214+00_00_备考总计划TODO.md"
+    / "备考总计划TODO.md"
+)
+
+
+def test_real_exam_prep_doc_splits_cleanly_with_no_structure_violations():
+    text = REAL_DOC.read_text(encoding="utf-8")
+
+    chunks = chunk_markdown_structured(text)
+
+    assert len(chunks) >= 10
+    assert any(c.has_table for c in chunks)
+    assert any(c.has_code_block for c in chunks)
+
+    report = detect_structure_violations(text, [c.content for c in chunks], chunk_overlap=0)
+    assert report.truncated_regions == 0
+
+    total_content_chars = sum(c.char_count for c in chunks)
+    assert total_content_chars > 0
+    assert total_content_chars <= len(text)
