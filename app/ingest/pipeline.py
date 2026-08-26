@@ -20,7 +20,7 @@ from app.ingest.hashing import make_doc_id, sha256_file
 from app.ingest.markdown_chunker import chunk_markdown_structured
 from app.ingest.parsers.csv_parser import parse_csv_file
 from app.ingest.parsers.image_parser import parse_image
-from app.ingest.parsers.pdf_parser import ParsedPdfPage, parse_pdf
+from app.ingest.parsers.pdf_parser import parse_pdf_to_markdown
 from app.ingest.parsers.text_parser import parse_text_file
 from app.models.clip_model import get_clip_embedder
 from app.models.embeddings import get_text_embedder
@@ -81,7 +81,7 @@ def _write_text_chunks(
     `has_code_block` are carried into the stored record. Every other file
     type keeps the existing char-level chunker with those three fields left
     at their defaults (`None`/`False`/`False`)."""
-    if file_type == "md":
+    if file_type in ("md", "pdf"):
         structured_chunks = chunk_markdown_structured(
             text,
             chunk_size=chunk_options.chunk_size,
@@ -219,58 +219,51 @@ def _ingest_image_file(
     return written
 
 
-def _ingest_scanned_pdf_page(
-    client, doc_id: str, path: Path, page: ParsedPdfPage, content_hash: str, origin: str, created_at: str
-) -> None:
-    """Write the scanned page's own bitmap as an image record (with a CLIP
-    vector and thumbnail), independent of the OCR text chunks written for
-    the same page by the caller. Deliberately does not call parse_image()
-    here: parse_image() would re-run OCR on the page image, duplicating the
-    OCR pass parse_pdf() already did for page.text."""
-    page_doc_id = f"{doc_id}:page{page.page_number}"
-    thumbnail_path = _save_thumbnail(page.page_image, page_doc_id)
-    clip_vector = get_clip_embedder().embed_image(page.page_image)
+def _ingest_pdf_extracted_image(
+    client, doc_id: str, pdf_path: Path, idx: int, image: Image.Image, content_hash: str, origin: str, created_at: str
+) -> str:
+    """入库 MinerU 从 PDF 里抽出的一张内嵌图片：持久化原图、生成缩略图、
+    做 CLIP 向量化。不调用 parse_image()——那个函数会跑一次不需要的 OCR，
+    风格上延续 _ingest_scanned_pdf_page 原本"直接内联 CLIP+缩略图"的做法。
+    """
+    img_doc_id = f"{doc_id}:img{idx}"
+    persisted_path = settings.extracted_images_dir / f"{img_doc_id}.jpg"
+    image.save(persisted_path, "JPEG")
+    thumbnail_path = _save_thumbnail(image, img_doc_id)
+    clip_vector = get_clip_embedder().embed_image(image)
     upsert_image(
         client,
         ImageRecord(
-            doc_id=page_doc_id,
-            source_path=f"{path}#page={page.page_number}",
+            doc_id=img_doc_id,
+            source_path=f"{pdf_path}#img={idx}",
             thumbnail_path=thumbnail_path,
-            width=page.page_image.width,
-            height=page.page_image.height,
-            has_ocr_text=bool(page.text),
+            width=image.width,
+            height=image.height,
+            has_ocr_text=False,
             content_hash=content_hash,
             origin=origin,
             created_at=created_at,
+            image_path=str(persisted_path),
         ),
         clip_vector,
     )
+    return img_doc_id
 
 
 def _ingest_pdf_file(
     client, doc_id: str, path: Path, content_hash: str, chunk_options: ChunkOptions, origin: str, created_at: str
 ) -> int:
-    pages = parse_pdf(path)
-    written = 0
-    for page in pages:
-        source_type = "ocr_image" if page.is_scanned else "normal"
-        written += _write_text_chunks(
-            client,
-            doc_id,
-            str(path),
-            "pdf",
-            page.text,
-            page.page_number,
-            source_type,
-            content_hash,
-            chunk_options,
-            origin=origin,
-            created_at=created_at,
-            start_index=written,
+    parsed = parse_pdf_to_markdown(path)
+    text = parsed.markdown_text
+    for idx, pdf_image in enumerate(parsed.images, start=1):
+        img_doc_id = _ingest_pdf_extracted_image(
+            client, doc_id, path, idx, pdf_image.image, content_hash, origin=origin, created_at=created_at
         )
-        if page.is_scanned and page.page_image is not None:
-            _ingest_scanned_pdf_page(client, doc_id, path, page, content_hash, origin=origin, created_at=created_at)
-    return written
+        text = text.replace(f"images/{pdf_image.filename}", f"/documents/{img_doc_id}/image")
+    return _write_text_chunks(
+        client, doc_id, str(path), "pdf", text, None, "normal", content_hash, chunk_options,
+        origin=origin, created_at=created_at,
+    )
 
 
 def ingest_file(

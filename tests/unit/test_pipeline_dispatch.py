@@ -1,31 +1,18 @@
 from pathlib import Path
 from unittest.mock import patch
 
-import fitz
+from PIL import Image
 
+from app.ingest.parsers.pdf_parser import ParsedPdfDocument, ParsedPdfImage
 from app.ingest.pipeline import ChunkOptions, ingest_file
 from app.models.embeddings import DenseSparseVector
-from app.store.qdrant_client import ensure_collections, get_qdrant_client, list_chunks_for_document
+from app.store.qdrant_client import ensure_collections, find_image_by_doc_id, get_qdrant_client, list_chunks_for_document
 
 
 def make_client():
     client = get_qdrant_client(location=":memory:")
     ensure_collections(client)
     return client
-
-
-def make_multipage_text_pdf(path, page_texts):
-    """Build a PDF where every page carries real (non-OCR) text-layer
-    content, each page's text distinct so collisions across pages would be
-    detectable. Uses the china-s builtin font like test_pdf_parser.py's
-    make_test_pdf, since the default helv font renders CJK as placeholder
-    glyphs that get_text() cannot extract."""
-    doc = fitz.open()
-    for text in page_texts:
-        page = doc.new_page()
-        page.insert_textbox(page.rect, text, fontname="china-s", fontsize=11)
-    doc.save(path)
-    doc.close()
 
 
 @patch("app.ingest.pipeline.get_text_embedder")
@@ -120,54 +107,6 @@ def test_ingest_honors_custom_chunk_options(mock_get_embedder, tmp_path):
 
 
 @patch("app.ingest.pipeline.get_text_embedder")
-def test_ingest_pdf_multipage_chunks_do_not_collide(mock_get_embedder, tmp_path):
-    """Regression test for the chunk_index collision bug: _write_text_chunks
-    used to derive chunk_index from a per-call enumerate() that reset to 0
-    on every page, so every page's chunks landed on the same Qdrant point
-    ids as page 1's and silently overwrote each other. With the fix
-    (threading a running start_index across pages), every chunk from every
-    page must end up as a distinct point in Qdrant."""
-    pdf_path = tmp_path / "multipage.pdf"
-    page_texts = [
-        "第一页的可提取文字层内容。" * 15,
-        "第二页的可提取文字层内容，与第一页完全不同。" * 15,
-        "第三页的可提取文字层内容，同样与前两页不同。" * 15,
-    ]
-    make_multipage_text_pdf(pdf_path, page_texts)
-
-    mock_get_embedder.return_value.embed.side_effect = lambda texts: [
-        DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5}) for _ in texts
-    ]
-
-    client = make_client()
-    result = ingest_file(
-        pdf_path,
-        source_ref=str(pdf_path),
-        client=client,
-        chunk_options=ChunkOptions(chunk_size=50, chunk_overlap=0),
-    )
-
-    assert result.status == "ingested"
-    # Sanity check the fixture actually exercises multiple chunks per page,
-    # not just one chunk-per-page (which wouldn't have caught the bug).
-    assert result.chunks_written > len(page_texts) * 2
-
-    stored = list_chunks_for_document(client, result.doc_id)
-    # This is the assertion that catches the collision bug: if later pages'
-    # chunks overwrote earlier pages' points at reused chunk_index values,
-    # the number of distinct points actually stored would be less than
-    # chunks_written.
-    assert len(stored) == result.chunks_written
-
-    stored_indices = [p["chunk_index"] for p in stored]
-    assert len(stored_indices) == len(set(stored_indices))
-    assert sorted(stored_indices) == list(range(result.chunks_written))
-
-    pages_represented = {p["page"] for p in stored}
-    assert pages_represented == {1, 2, 3}
-
-
-@patch("app.ingest.pipeline.get_text_embedder")
 def test_ingest_upload_source_ref_sets_origin_upload(mock_get_embedder, tmp_path):
     f = tmp_path / "note.txt"
     f.write_text("hello", encoding="utf-8")
@@ -251,3 +190,60 @@ def test_ingest_txt_file_still_leaves_heading_metadata_at_defaults(mock_get_embe
     assert chunks[0]["heading_path"] is None
     assert chunks[0]["has_table"] is False
     assert chunks[0]["has_code_block"] is False
+
+
+@patch("app.ingest.pipeline.get_clip_embedder")
+@patch("app.ingest.pipeline.get_text_embedder")
+@patch("app.ingest.pipeline.parse_pdf_to_markdown")
+def test_ingest_pdf_writes_structured_chunks_and_extracted_images(
+    mock_parse_pdf, mock_get_text_embedder, mock_get_clip_embedder, tmp_path, monkeypatch
+):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    settings.extracted_images_dir.mkdir(parents=True, exist_ok=True)
+    settings.thumbnails_dir.mkdir(parents=True, exist_ok=True)
+
+    markdown_text = (
+        "# 第一章 概述\n\n"
+        "这是正文，配一张图 ![示例](images/pic1.png) 结尾。\n\n"
+        "## 1.1 数据表\n\n"
+        "| A | B |\n| - | - |\n| 1 | 2 |\n\n"
+        "另配一张图 ![示例2](images/pic2.png) 补充说明。\n"
+    )
+    fake_images = [
+        ParsedPdfImage(filename="pic1.png", image=Image.new("RGB", (20, 20), color="red")),
+        ParsedPdfImage(filename="pic2.png", image=Image.new("RGB", (30, 30), color="blue")),
+    ]
+    mock_parse_pdf.return_value = ParsedPdfDocument(markdown_text=markdown_text, images=fake_images)
+
+    mock_get_text_embedder.return_value.embed.side_effect = lambda texts: [
+        DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5}) for _ in texts
+    ]
+    mock_get_clip_embedder.return_value.embed_image.return_value = [0.2] * 512
+
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake content")
+
+    client = make_client()
+    result = ingest_file(pdf_path, source_ref=str(pdf_path), client=client)
+
+    assert result.status == "ingested"
+    mock_parse_pdf.assert_called_once_with(pdf_path)
+
+    stored_chunks = list_chunks_for_document(client, result.doc_id)
+    assert any(c["heading_path"] for c in stored_chunks)
+    assert any(c["has_table"] for c in stored_chunks)
+    assert all(c["page"] is None for c in stored_chunks)
+    assert all(c["source_type"] == "normal" for c in stored_chunks)
+
+    joined_text = " ".join(c["text"] for c in stored_chunks)
+    assert "images/pic1.png" not in joined_text
+    assert f"/documents/{result.doc_id}:img1/image" in joined_text
+    assert f"/documents/{result.doc_id}:img2/image" in joined_text
+
+    img1 = find_image_by_doc_id(client, f"{result.doc_id}:img1")
+    img2 = find_image_by_doc_id(client, f"{result.doc_id}:img2")
+    assert img1 is not None and img1["width"] == 20 and img1["has_ocr_text"] is False
+    assert img2 is not None and img2["width"] == 30
+    assert img1["image_path"] is not None and Path(img1["image_path"]).exists()
