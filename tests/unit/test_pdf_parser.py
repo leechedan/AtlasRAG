@@ -1,47 +1,65 @@
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
-import fitz
-from PIL import Image, ImageDraw
+import pytest
+from PIL import Image
 
-from app.ingest.parsers.pdf_parser import parse_pdf
-
-
-def make_test_pdf(path):
-    doc = fitz.open()
-
-    page1 = doc.new_page()
-    # Default PyMuPDF font (helv) has no CJK glyphs and silently renders
-    # unsupported characters as placeholders, so use a builtin CJK font.
-    # The sentence must also clear parse_pdf's default text_threshold=20.
-    page1.insert_text(
-        (72, 72), "这是可提取的文字层，用于测试PDF解析器的文字提取功能。", fontname="china-s"
-    )
-
-    page2 = doc.new_page()
-    img = Image.new("RGB", (400, 200), color="white")
-    draw = ImageDraw.Draw(img)
-    draw.text((10, 80), "scanned text", fill="black")
-    img_path = path.parent / "scan.png"
-    img.save(img_path)
-    rect = fitz.Rect(0, 0, page2.rect.width, page2.rect.height)
-    page2.insert_image(rect, filename=str(img_path))
-
-    doc.save(path)
-    doc.close()
+from app.ingest.parsers.pdf_parser import parse_pdf_to_markdown
 
 
-@patch("app.ingest.parsers.pdf_parser.run_ocr", return_value="scanned text")
-def test_parse_pdf_extracts_text_layer_and_ocr_fallback(mock_ocr, tmp_path):
-    pdf_path = tmp_path / "test.pdf"
-    make_test_pdf(pdf_path)
+def _completed(returncode, stderr=""):
+    return subprocess.CompletedProcess(args=["mineru"], returncode=returncode, stdout="", stderr=stderr)
 
-    pages = parse_pdf(pdf_path)
 
-    assert len(pages) == 2
-    assert pages[0].is_scanned is False
-    assert "可提取的文字层" in pages[0].text
+@patch("app.ingest.parsers.pdf_parser.subprocess.run")
+@patch("app.ingest.parsers.pdf_parser.tempfile.mkdtemp")
+def test_parse_pdf_to_markdown_returns_text_and_images(mock_mkdtemp, mock_run, tmp_path):
+    out_dir = tmp_path / "out"
+    nested = out_dir / "doc" / "auto"
+    nested.mkdir(parents=True)
+    (nested / "doc.md").write_text("# 标题\n\n正文 ![图](images/a.jpg)。", encoding="utf-8")
+    images_dir = nested / "images"
+    images_dir.mkdir()
+    Image.new("RGB", (5, 5), color="red").save(images_dir / "a.jpg")
+    Image.new("RGB", (6, 6), color="blue").save(images_dir / "b.jpg")
 
-    assert pages[1].is_scanned is True
-    assert pages[1].text == "scanned text"
-    assert pages[1].page_image is not None
-    mock_ocr.assert_called_once()
+    mock_mkdtemp.return_value = str(out_dir)
+    mock_run.return_value = _completed(0)
+
+    result = parse_pdf_to_markdown(Path("/fake/input.pdf"))
+
+    assert "标题" in result.markdown_text
+    assert [img.filename for img in result.images] == ["a.jpg", "b.jpg"]
+    assert result.images[0].image.size == (5, 5)
+    assert result.images[1].image.size == (6, 6)
+    # 处理完必须清理临时目录，不能把 MinerU 的中间产物留在磁盘上。
+    assert not out_dir.exists()
+
+
+@patch("app.ingest.parsers.pdf_parser.subprocess.run")
+@patch("app.ingest.parsers.pdf_parser.tempfile.mkdtemp")
+def test_parse_pdf_to_markdown_raises_on_nonzero_exit(mock_mkdtemp, mock_run, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    mock_mkdtemp.return_value = str(out_dir)
+    mock_run.return_value = _completed(1, stderr="model weights missing")
+
+    with pytest.raises(RuntimeError, match="model weights missing"):
+        parse_pdf_to_markdown(Path("/fake/input.pdf"))
+
+    assert not out_dir.exists()
+
+
+@patch("app.ingest.parsers.pdf_parser.subprocess.run")
+@patch("app.ingest.parsers.pdf_parser.tempfile.mkdtemp")
+def test_parse_pdf_to_markdown_raises_when_no_markdown_produced(mock_mkdtemp, mock_run, tmp_path):
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    mock_mkdtemp.return_value = str(out_dir)
+    mock_run.return_value = _completed(0)
+
+    with pytest.raises(RuntimeError, match="no markdown output"):
+        parse_pdf_to_markdown(Path("/fake/input.pdf"))
+
+    assert not out_dir.exists()
