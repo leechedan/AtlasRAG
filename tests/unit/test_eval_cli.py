@@ -95,3 +95,37 @@ def test_main_requires_retrieve_fn_wiring_when_qa_file_given(monkeypatch, tmp_pa
 
     assert captured_kwargs["qa_file"] == str(qa_path)
     assert captured_kwargs["retrieve_fn"] is not None
+
+
+def test_main_passes_chunker_arg_to_run(monkeypatch, tmp_path):
+    captured_kwargs = {}
+    monkeypatch.setattr(
+        "scripts.eval_chunk_quality.run",
+        lambda **kwargs: captured_kwargs.update(kwargs) or {"aggregate": {}},
+    )
+    monkeypatch.setattr("scripts.eval_chunk_quality.write_report", lambda *a, **k: None)
+
+    main(
+        [
+            "--input-dir",
+            str(tmp_path),
+            "--no-semantic",
+            "--chunker",
+            "structured",
+        ]
+    )
+
+    assert captured_kwargs["chunker"] == "structured"
+
+
+def test_main_defaults_chunker_to_char(monkeypatch, tmp_path):
+    captured_kwargs = {}
+    monkeypatch.setattr(
+        "scripts.eval_chunk_quality.run",
+        lambda **kwargs: captured_kwargs.update(kwargs) or {"aggregate": {}},
+    )
+    monkeypatch.setattr("scripts.eval_chunk_quality.write_report", lambda *a, **k: None)
+
+    main(["--input-dir", str(tmp_path), "--no-semantic"])
+
+    assert captured_kwargs["chunker"] == "char"

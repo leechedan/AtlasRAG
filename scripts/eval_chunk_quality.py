@@ -41,6 +41,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--min-chars", type=int, default=None)
     parser.add_argument("--max-chars", type=int, default=None)
     parser.add_argument("--no-semantic", action="store_true")
+    parser.add_argument("--chunker", choices=["char", "structured"], default="char")
     parser.add_argument("--qa-file", default=None)
     parser.add_argument("--output", default="report.json")
     return parser.parse_args(argv)
@@ -70,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         embedder=embedder,
         qa_file=args.qa_file,
         retrieve_fn=retrieve_fn,
+        chunker=args.chunker,
     )
 
     write_report(report, args.output)
