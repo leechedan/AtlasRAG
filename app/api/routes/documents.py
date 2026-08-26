@@ -99,6 +99,9 @@ def get_document_chunks(doc_id: str, store=Depends(get_store_client)):
             source_type=c["source_type"],
             source_path=c["source_path"],
             file_type=c["file_type"],
+            heading_path=c.get("heading_path"),
+            has_table=c.get("has_table", False),
+            has_code_block=c.get("has_code_block", False),
         )
         for c in chunks
     ]

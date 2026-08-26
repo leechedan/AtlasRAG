@@ -46,6 +46,9 @@ class TextChunkRecord:
     content_hash: str
     origin: str | None = None
     created_at: str | None = None
+    heading_path: str | None = None
+    has_table: bool = False
+    has_code_block: bool = False
 
 
 @dataclass
@@ -97,6 +100,9 @@ def upsert_text_chunk(client: QdrantClient, record: TextChunkRecord, vector: Den
                     "content_hash": record.content_hash,
                     "origin": record.origin,
                     "created_at": record.created_at,
+                    "heading_path": record.heading_path,
+                    "has_table": record.has_table,
+                    "has_code_block": record.has_code_block,
                 },
             )
         ],

@@ -64,6 +64,36 @@ def test_do_select_document_returns_chunks_and_doc_id():
                     "chunk_id": "c1",
                     "text": "hello",
                     "doc_id": "doc-1",
+                    "source_path": "/a.md",
+                    "file_type": "md",
+                    "heading_path": "一、简介",
+                    "has_table": False,
+                    "has_code_block": False,
+                }
+            ],
+        )
+    )
+    documents_table = [["doc-1", "a.md", "md", "upload", 1, "normal"]]
+
+    rows, doc_id = do_select_document(documents_table, FakeSelectData(0))
+
+    assert rows == [[0, "一、简介", None, "normal", "c1", "hello"]]
+    assert doc_id == "doc-1"
+
+
+@respx.mock
+def test_do_select_document_shows_empty_heading_path_when_absent():
+    respx.get("http://localhost:8000/documents/doc-1/chunks").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "chunk_index": 0,
+                    "page": None,
+                    "source_type": "normal",
+                    "chunk_id": "c1",
+                    "text": "hello",
+                    "doc_id": "doc-1",
                     "source_path": "/a.txt",
                     "file_type": "txt",
                 }
@@ -74,7 +104,7 @@ def test_do_select_document_returns_chunks_and_doc_id():
 
     rows, doc_id = do_select_document(documents_table, FakeSelectData(0))
 
-    assert rows == [[0, None, "normal", "c1", "hello"]]
+    assert rows == [[0, "", None, "normal", "c1", "hello"]]
     assert doc_id == "doc-1"
 
 

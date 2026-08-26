@@ -60,6 +60,37 @@ def test_get_existing_content_hash_none_when_missing():
     assert get_existing_content_hash(client, "unknown-doc") is None
 
 
+def test_upsert_text_chunk_stores_heading_metadata():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    record = TextChunkRecord(
+        doc_id="doc1", chunk_index=0, text="表格内容", source_path="/a.md",
+        file_type="md", page=None, source_type="normal", content_hash="h1",
+        heading_path="一、总览 > 表格", has_table=True, has_code_block=False,
+    )
+    upsert_text_chunk(client, record, vec)
+
+    hits = search_text_hybrid(client, vec, top_k=5)
+    assert hits[0].payload["heading_path"] == "一、总览 > 表格"
+    assert hits[0].payload["has_table"] is True
+    assert hits[0].payload["has_code_block"] is False
+
+
+def test_upsert_text_chunk_defaults_heading_metadata_when_omitted():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    record = TextChunkRecord(
+        doc_id="doc2", chunk_index=0, text="plain text", source_path="/a.txt",
+        file_type="txt", page=None, source_type="normal", content_hash="h2",
+    )
+    upsert_text_chunk(client, record, vec)
+
+    hits = search_text_hybrid(client, vec, top_k=5)
+    assert hits[0].payload["heading_path"] is None
+    assert hits[0].payload["has_table"] is False
+    assert hits[0].payload["has_code_block"] is False
+
+
 def test_get_existing_content_hash_returns_hash_after_upsert():
     client = make_client()
     vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})

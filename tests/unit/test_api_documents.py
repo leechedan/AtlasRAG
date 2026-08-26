@@ -257,7 +257,8 @@ def test_get_document_chunks_returns_ordered_chunks(monkeypatch):
         lambda store, doc_id: [
             {
                 "doc_id": doc_id, "chunk_index": 0, "text": "c0", "page": None,
-                "source_type": "normal", "source_path": "/a.txt", "file_type": "txt",
+                "source_type": "normal", "source_path": "/a.md", "file_type": "md",
+                "heading_path": "一、简介", "has_table": False, "has_code_block": True,
             },
         ],
     )
@@ -270,6 +271,9 @@ def test_get_document_chunks_returns_ordered_chunks(monkeypatch):
     body = response.json()
     assert body[0]["chunk_index"] == 0
     assert body[0]["chunk_id"]
+    assert body[0]["heading_path"] == "一、简介"
+    assert body[0]["has_table"] is False
+    assert body[0]["has_code_block"] is True
 
 
 def test_get_document_chunks_404_when_document_missing(monkeypatch):

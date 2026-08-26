@@ -137,7 +137,10 @@ def do_select_document(documents_table, evt: gr.SelectData):
     response = httpx.get(f"{API_BASE_URL}/documents/{doc_id}/chunks", timeout=30)
     response.raise_for_status()
     chunks = response.json()
-    rows = [[c["chunk_index"], c["page"], c["source_type"], c["chunk_id"], c["text"]] for c in chunks]
+    rows = [
+        [c["chunk_index"], c.get("heading_path") or "", c["page"], c["source_type"], c["chunk_id"], c["text"]]
+        for c in chunks
+    ]
     return rows, doc_id
 
 
@@ -249,7 +252,7 @@ with gr.Blocks(title="检索服务管理界面") as demo:
         delete_doc_button = gr.Button("删除所选文档")
         delete_doc_result = gr.Textbox(label="删除结果")
         chunks_table = gr.Dataframe(
-            headers=["序号", "页码", "内容类型", "chunk_id", "文本"],
+            headers=["序号", "标题路径", "页码", "内容类型", "chunk_id", "文本"],
             type="array",
             interactive=False,
             wrap=True,

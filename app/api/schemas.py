@@ -94,6 +94,9 @@ class ChunkOut(BaseModel):
     source_type: str
     source_path: str
     file_type: str
+    heading_path: str | None = None
+    has_table: bool = False
+    has_code_block: bool = False
 
 
 class ChunksPageOut(BaseModel):

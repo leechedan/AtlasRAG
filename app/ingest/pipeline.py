@@ -17,6 +17,7 @@ from PIL import Image
 from app.config import settings
 from app.ingest.chunking import chunk_csv_rows, chunk_text
 from app.ingest.hashing import make_doc_id, sha256_file
+from app.ingest.markdown_chunker import chunk_markdown_structured
 from app.ingest.parsers.csv_parser import parse_csv_file
 from app.ingest.parsers.image_parser import parse_image
 from app.ingest.parsers.pdf_parser import ParsedPdfPage, parse_pdf
@@ -71,17 +72,42 @@ def _write_text_chunks(
     page). `start_index` lets callers keep chunk_index monotonically
     increasing across several calls for the same doc_id (e.g. one call per
     PDF page) so chunk_index values never collide and silently overwrite
-    each other in Qdrant."""
-    chunks = chunk_text(
-        text,
-        chunk_size=chunk_options.chunk_size,
-        chunk_overlap=chunk_options.chunk_overlap,
-        separators=chunk_options.separators,
-    )
+    each other in Qdrant.
+
+    Markdown files (`file_type == "md"`) use the heading-AST-aware
+    `chunk_markdown_structured()` instead of the char-level `chunk_text()`,
+    so chunks respect section boundaries and never truncate a table/code
+    block mid-element; each chunk's `heading_path`/`has_table`/
+    `has_code_block` are carried into the stored record. Every other file
+    type keeps the existing char-level chunker with those three fields left
+    at their defaults (`None`/`False`/`False`)."""
+    if file_type == "md":
+        structured_chunks = chunk_markdown_structured(
+            text,
+            chunk_size=chunk_options.chunk_size,
+            chunk_overlap=chunk_options.chunk_overlap,
+        )
+        chunks = [c.content for c in structured_chunks]
+        heading_paths: list[str | None] = [c.heading_path for c in structured_chunks]
+        has_tables = [c.has_table for c in structured_chunks]
+        has_code_blocks = [c.has_code_block for c in structured_chunks]
+    else:
+        chunks = chunk_text(
+            text,
+            chunk_size=chunk_options.chunk_size,
+            chunk_overlap=chunk_options.chunk_overlap,
+            separators=chunk_options.separators,
+        )
+        heading_paths = [None] * len(chunks)
+        has_tables = [False] * len(chunks)
+        has_code_blocks = [False] * len(chunks)
+
     if not chunks:
         return 0
     vectors = get_text_embedder().embed(chunks)
-    for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
+    for idx, (chunk, vector, heading_path, has_table, has_code_block) in enumerate(
+        zip(chunks, vectors, heading_paths, has_tables, has_code_blocks)
+    ):
         record = TextChunkRecord(
             doc_id=doc_id,
             chunk_index=start_index + idx,
@@ -93,6 +119,9 @@ def _write_text_chunks(
             content_hash=content_hash,
             origin=origin,
             created_at=created_at,
+            heading_path=heading_path,
+            has_table=has_table,
+            has_code_block=has_code_block,
         )
         upsert_text_chunk(client, record, vector)
     return len(chunks)

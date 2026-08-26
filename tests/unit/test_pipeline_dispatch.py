@@ -196,3 +196,58 @@ def test_ingest_plain_path_source_ref_sets_origin_watch(mock_get_embedder, tmp_p
 
     chunks = list_chunks_for_document(client, result.doc_id)
     assert chunks[0]["origin"] == "watch"
+
+
+@patch("app.ingest.pipeline.get_text_embedder")
+def test_ingest_md_file_uses_structured_chunker_with_heading_metadata(mock_get_embedder, tmp_path):
+    """Regression coverage for wiring chunk_markdown_structured() into the
+    real ingestion path: a .md file with two H2 sections must be split by
+    heading (not by the old char-level chunker's arbitrary 1000-char
+    windows), and each stored chunk must carry heading_path/has_table/
+    has_code_block instead of leaving them at their defaults."""
+    f = tmp_path / "doc.md"
+    f.write_text(
+        "# 标题\n\n"
+        "## 一、简介\n\n"
+        "这是简介内容。\n\n"
+        "## 二、数据表\n\n"
+        "| a | b |\n|---|---|\n| 1 | 2 |\n",
+        encoding="utf-8",
+    )
+    mock_get_embedder.return_value.embed.side_effect = lambda texts: [
+        DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5}) for _ in texts
+    ]
+
+    client = make_client()
+    result = ingest_file(f, source_ref=str(f), client=client)
+
+    assert result.status == "ingested"
+    assert result.chunks_written == 2
+
+    chunks = list_chunks_for_document(client, result.doc_id)
+    heading_paths = [c["heading_path"] for c in chunks]
+    assert "标题 > 一、简介" in heading_paths
+    assert "标题 > 二、数据表" in heading_paths
+    table_chunk = next(c for c in chunks if c["heading_path"] == "标题 > 二、数据表")
+    assert table_chunk["has_table"] is True
+    assert table_chunk["has_code_block"] is False
+    assert "| a | b |" in table_chunk["text"]
+
+
+@patch("app.ingest.pipeline.get_text_embedder")
+def test_ingest_txt_file_still_leaves_heading_metadata_at_defaults(mock_get_embedder, tmp_path):
+    """Non-Markdown files must keep using the old char-level chunker
+    unchanged -- only file_type == "md" switches to the structured one."""
+    f = tmp_path / "note.txt"
+    f.write_text("plain text content, no markdown structure at all.", encoding="utf-8")
+    mock_get_embedder.return_value.embed.side_effect = lambda texts: [
+        DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5}) for _ in texts
+    ]
+
+    client = make_client()
+    result = ingest_file(f, source_ref=str(f), client=client)
+
+    chunks = list_chunks_for_document(client, result.doc_id)
+    assert chunks[0]["heading_path"] is None
+    assert chunks[0]["has_table"] is False
+    assert chunks[0]["has_code_block"] is False
