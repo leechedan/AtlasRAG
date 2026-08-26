@@ -130,6 +130,14 @@ class StructuredChunk:
 - 表格/代码块识别依赖 `markdown-it-py` 的 `table`/`fence` token，与
   `app/eval/structure_metrics.py` 用同一套解析逻辑、同样的已知局限（例如
   缩进代码块不会被识别为 `fence`）。
+  **更新（2026-08-26 review 修复）**：`markdown_chunker.py` 现在把
+  `code_block`（4 空格缩进代码块）token 和 `fence` 同样归类为
+  `kind="code"`，因此在本模块里缩进代码块已经和围栏代码块一样被识别、
+  被保护（不会被字符级回退逻辑从中间截断，也会置位
+  `has_code_block=True`）。上面这条局限仍然只针对
+  `app/eval/structure_metrics.py` 自己的违规检测——它内部只看
+  `fence`/`table_open` 两种 token（未跟随本次修复变更），和本模块无关，
+  超出本次修复范围。
 
 ## 测试计划
 
@@ -155,3 +163,14 @@ class StructuredChunk:
 - `retrieval_metrics` 的结构化切片 A/B 对比留作后续（需要真实 Qdrant 摄取
   + 标注集）。
 - 只覆盖 `.md`；`.txt`/`.csv`/PDF/图片 OCR 文本仍用旧 `chunk_text`。
+- 含表格/代码块的 chunk 在 `content` 里会保留一个末尾换行符（`_group_text`
+  对这类组只做 `lstrip()` 而不是 `.strip()`），这是刻意保留的，用来配合
+  `app/eval/structure_metrics.detect_structure_violations` 的区域包含性
+  判断：该函数用 `line_offsets[region.end_line]`（含末尾换行）作为受保护
+  区域的结束偏移，如果 chunk 文本被完整 `.strip()` 掉末尾换行，一个内容
+  完整的 chunk 会比这个结束偏移少一个字符，从而被误判为截断
+  （在 `data/uploads` 语料上实测会导致 11 个受保护区域中的 3 个出现这种
+  假阳性）。这是 chunker 空白处理和这一个 eval 指标实现之间真实存在的耦
+  合，不是格式上的随意不一致；如果以后把 `detect_structure_violations`
+  的包含性判断改成对空白容忍，就可以去掉这个不对称处理，统一用
+  `.strip()`。

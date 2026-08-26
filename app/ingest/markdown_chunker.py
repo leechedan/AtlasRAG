@@ -18,6 +18,7 @@ _BLOCK_TOKEN_TYPES = {
     "paragraph_open",
     "table_open",
     "fence",
+    "code_block",
     "bullet_list_open",
     "ordered_list_open",
     "blockquote_open",
@@ -72,7 +73,7 @@ def _top_level_blocks(tokens: list) -> list[_Block]:
             continue
         if token.type == "table_open":
             kind = "table"
-        elif token.type == "fence":
+        elif token.type in ("fence", "code_block"):
             kind = "code"
         else:
             kind = None
@@ -132,8 +133,22 @@ def _pack_blocks(blocks: list[_Block], lines: list[str], chunk_size: int) -> lis
 
 
 def _group_text(group: list[_Block], lines: list[str]) -> str:
+    """拼接一组块对应的原文行。
+
+    是否用 `.strip()` 还是只 `lstrip()` 取决于组里有没有受保护块（表格/
+    代码），这不是随意的格式选择，而是和
+    `app/eval/structure_metrics.detect_structure_violations` 的实现耦合：
+    该函数计算受保护区域结束偏移量时用的是 `line_offsets[region.end_line]`，
+    这个偏移量包含了区域末尾的换行符。如果这里对含受保护块的 chunk 做完
+    整的 `.strip()`（会去掉末尾换行），chunk 文本就会比 region 的结束偏移
+    少一个字符，即使内容完整也会被 `detect_structure_violations` 误判为
+    截断（"truncated"）。所以含受保护块的组只做 `lstrip()`，保留末尾换行，
+    让 chunk 文本能完整覆盖到 region 的结束偏移。
+    不含受保护块的组没有这个下游比较，用普通 `.strip()` 去掉首尾空白即可。
+    如果以后把 `detect_structure_violations` 的包含性判断改成对空白容忍，
+    这里就可以恢复成统一的 `.strip()`。
+    """
     content = "".join(lines[group[0].start_line : group[-1].end_line])
-    # If group contains protected regions, preserve trailing newlines for structure detection
     has_protected = any(b.kind is not None for b in group)
     if has_protected:
         return content.lstrip()

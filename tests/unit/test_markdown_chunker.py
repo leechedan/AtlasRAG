@@ -152,6 +152,22 @@ def test_table_never_split_across_two_chunks_even_in_long_section():
     assert code_hits[0].has_code_block is True
 
 
+def test_indented_code_block_content_is_preserved_not_dropped():
+    text = (
+        "## Section\n"
+        "\n"
+        "first paragraph\n"
+        "\n"
+        "    indented code line one\n"
+        "    indented code line two\n"
+    )
+    chunks = chunk_markdown_structured(text)
+    combined = "\n".join(c.content for c in chunks)
+    assert "indented code line one" in combined
+    assert "indented code line two" in combined
+    assert any(c.has_code_block for c in chunks)
+
+
 def test_oversized_protected_table_stays_whole_even_over_chunk_size():
     rows = "\n".join(f"| r{i} | v{i} |" for i in range(100))
     text = "## T\n\n| a | b |\n|---|---|\n" + rows + "\n"
@@ -179,14 +195,7 @@ def test_structured_chunks_never_truncate_protected_regions_per_eval_metrics():
     assert report.truncated_regions == 0
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-REAL_DOC = (
-    REPO_ROOT
-    / "data"
-    / "uploads"
-    / "upload_2026-08-25T12_57_30.283214+00_00_备考总计划TODO.md"
-    / "备考总计划TODO.md"
-)
+REAL_DOC = Path(__file__).resolve().parent / "fixtures" / "备考总计划TODO.md"
 
 
 def test_real_exam_prep_doc_splits_cleanly_with_no_structure_violations():
