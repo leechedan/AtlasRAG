@@ -1,0 +1,177 @@
+from app.eval.structure_metrics import detect_structure_violations
+from app.ingest.markdown_chunker import NO_HEADING_PLACEHOLDER, chunk_markdown_structured
+
+HIERARCHY_MD = (
+    "leading text before any heading\n"
+    "\n"
+    "# Title\n"
+    "\n"
+    "intro under title\n"
+    "\n"
+    "## Section A\n"
+    "\n"
+    "content of A\n"
+    "\n"
+    "### Sub A1\n"
+    "\n"
+    "content of sub a1\n"
+    "\n"
+    "## Section B\n"
+    "\n"
+    "| a | b |\n"
+    "|---|---|\n"
+    "| 1 | 2 |\n"
+    "\n"
+    "```python\n"
+    "print('hi')\n"
+    "```\n"
+)
+
+
+def test_leading_text_before_first_heading_becomes_placeholder_chunk():
+    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    assert chunks[0].heading_path == NO_HEADING_PLACEHOLDER
+    assert chunks[0].content == "leading text before any heading"
+
+
+def test_heading_own_content_uses_heading_text_as_path():
+    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    by_path = {c.heading_path: c for c in chunks}
+    assert by_path["Title"].content == "intro under title"
+
+
+def test_breadcrumb_joins_ancestor_headings_with_arrow():
+    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    by_path = {c.heading_path: c for c in chunks}
+    assert by_path["Title > Section A"].content == "content of A"
+    assert by_path["Title > Section A > Sub A1"].content == "content of sub a1"
+
+
+def test_sibling_heading_replaces_previous_sibling_in_breadcrumb():
+    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    paths = [c.heading_path for c in chunks]
+    assert "Title > Section B" in paths
+    assert "Title > Section A > Section B" not in paths
+
+
+def test_table_and_code_block_flags_set_and_content_preserved_verbatim():
+    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    by_path = {c.heading_path: c for c in chunks}
+    section_b = by_path["Title > Section B"]
+    assert section_b.has_table is True
+    assert section_b.has_code_block is True
+    assert "| a | b |" in section_b.content
+    assert "```python" in section_b.content
+
+
+def test_char_count_and_token_estimate_match_content():
+    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    for c in chunks:
+        assert c.char_count == len(c.content)
+        assert c.token_estimate == round(len(c.content) / 1.8)
+
+
+def test_chunk_ids_are_sequential_from_zero():
+    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    assert [c.chunk_id for c in chunks] == list(range(len(chunks)))
+
+
+NO_OWN_CONTENT_MD = "## Parent\n### Child\n\ncontent under child\n"
+
+
+def test_heading_with_no_direct_content_produces_no_chunk_for_itself():
+    chunks = chunk_markdown_structured(NO_OWN_CONTENT_MD)
+    assert len(chunks) == 1
+    assert chunks[0].heading_path == "Parent > Child"
+    assert chunks[0].content == "content under child"
+
+
+def test_empty_text_returns_empty_list():
+    assert chunk_markdown_structured("") == []
+    assert chunk_markdown_structured("   \n\n  ") == []
+
+
+def test_no_heading_document_uses_placeholder_and_keeps_whole_text():
+    text = "just a plain paragraph with no headings at all.\n"
+    chunks = chunk_markdown_structured(text)
+    assert len(chunks) == 1
+    assert chunks[0].heading_path == NO_HEADING_PLACEHOLDER
+    assert chunks[0].content == "just a plain paragraph with no headings at all."
+
+
+def _build_long_section(paragraph_count: int) -> str:
+    paragraphs = [f"paragraph number {i} unique marker" for i in range(paragraph_count)]
+    return "## Section\n\n" + "\n\n".join(paragraphs) + "\n"
+
+
+def test_long_section_splits_into_multiple_chunks_with_numeric_suffix():
+    text = _build_long_section(20)
+    chunks = chunk_markdown_structured(text, chunk_size=100, chunk_overlap=20)
+
+    section_chunks = [c for c in chunks if c.heading_path.startswith("Section")]
+    assert len(section_chunks) > 1
+    assert section_chunks[0].heading_path == "Section"
+    assert section_chunks[1].heading_path == "Section #2"
+
+
+def test_long_section_split_has_no_overlap_and_no_lost_content():
+    text = _build_long_section(20)
+    chunks = chunk_markdown_structured(text, chunk_size=100, chunk_overlap=20)
+
+    for i in range(20):
+        marker = f"paragraph number {i} unique marker"
+        occurrences = sum(c.content.count(marker) for c in chunks)
+        assert occurrences == 1
+
+
+def test_table_never_split_across_two_chunks_even_in_long_section():
+    text = (
+        "## Big Section\n"
+        "\n"
+        + ("word " * 200) + "\n"
+        "\n"
+        "| a | b |\n"
+        "|---|---|\n"
+        "| 1 | 2 |\n"
+        "\n"
+        "```python\n"
+        "print('hi')\n"
+        "```\n"
+    )
+    chunks = chunk_markdown_structured(text, chunk_size=50, chunk_overlap=0)
+
+    table_text = "| a | b |\n|---|---|\n| 1 | 2 |"
+    code_text = "```python\nprint('hi')\n```"
+    table_hits = [c for c in chunks if table_text in c.content]
+    code_hits = [c for c in chunks if code_text in c.content]
+    assert len(table_hits) == 1
+    assert len(code_hits) == 1
+    assert table_hits[0].has_table is True
+    assert code_hits[0].has_code_block is True
+
+
+def test_oversized_protected_table_stays_whole_even_over_chunk_size():
+    rows = "\n".join(f"| r{i} | v{i} |" for i in range(100))
+    text = "## T\n\n| a | b |\n|---|---|\n" + rows + "\n"
+    chunks = chunk_markdown_structured(text, chunk_size=50, chunk_overlap=0)
+
+    assert len(chunks) == 1
+    assert chunks[0].has_table is True
+    assert chunks[0].char_count > 50
+
+
+def test_single_oversized_plain_paragraph_falls_back_to_char_level_split():
+    text = "## Section\n\n" + ("x" * 3000) + "\n"
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0)
+
+    assert len(chunks) > 1
+    assert all(c.char_count <= 1000 for c in chunks)
+    assert sum(c.content.count("x") for c in chunks) == 3000
+
+
+def test_structured_chunks_never_truncate_protected_regions_per_eval_metrics():
+    chunks = chunk_markdown_structured(HIERARCHY_MD, chunk_size=1000, chunk_overlap=0)
+    report = detect_structure_violations(
+        HIERARCHY_MD, [c.content for c in chunks], chunk_overlap=0
+    )
+    assert report.truncated_regions == 0
