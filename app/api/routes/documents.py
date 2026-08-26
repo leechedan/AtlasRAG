@@ -126,6 +126,20 @@ def get_document_thumbnail(doc_id: str, store=Depends(get_store_client)):
     return FileResponse(thumbnail_path, media_type="image/jpeg")
 
 
+@router.get("/documents/{doc_id}/image")
+def get_document_image(doc_id: str, store=Depends(get_store_client)):
+    # 和 get_document_thumbnail 同样的理由：MinerU 抽取的原图只在 worker
+    # 容器本地磁盘上（settings.extracted_images_dir），Admin UI 等外部调用
+    # 方必须经由这个 HTTP 接口才能显示。
+    image = find_image_by_doc_id(store, doc_id)
+    if image is None or not image.get("image_path"):
+        raise HTTPException(status_code=404, detail="original image not available")
+    image_path = Path(image["image_path"])
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="image file missing")
+    return FileResponse(image_path, media_type="image/jpeg")
+
+
 @router.delete("/documents/{doc_id}", response_model=DeleteResponse)
 def delete_document(doc_id: str):
     queue = get_queue()

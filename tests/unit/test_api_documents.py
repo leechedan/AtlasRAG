@@ -114,6 +114,50 @@ def test_get_document_thumbnail_404_when_no_image_record(monkeypatch):
     assert response.status_code == 404
 
 
+def test_get_document_image_returns_image_bytes(tmp_path, monkeypatch):
+    img_path = tmp_path / "full.jpg"
+    Image.new("RGB", (10, 10), color="blue").save(img_path, "JPEG")
+
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr(
+        "app.api.routes.documents.find_image_by_doc_id",
+        lambda store, doc_id: {"doc_id": doc_id, "image_path": str(img_path)},
+    )
+
+    client = TestClient(app)
+    response = client.get("/documents/img1/image")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.content == img_path.read_bytes()
+
+
+def test_get_document_image_404_when_no_image_record(monkeypatch):
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr("app.api.routes.documents.find_image_by_doc_id", lambda store, doc_id: None)
+
+    client = TestClient(app)
+    response = client.get("/documents/unknown/image")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+
+
+def test_get_document_image_404_when_image_path_missing_on_record(monkeypatch):
+    app.dependency_overrides[get_store_client] = lambda: object()
+    monkeypatch.setattr(
+        "app.api.routes.documents.find_image_by_doc_id",
+        lambda store, doc_id: {"doc_id": doc_id, "thumbnail_path": "/thumb/x.jpg"},
+    )
+
+    client = TestClient(app)
+    response = client.get("/documents/img2/image")
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+
+
 @patch("app.api.routes.documents.get_queue")
 def test_delete_document_enqueues_delete_job(mock_get_queue):
     mock_queue = MagicMock()
