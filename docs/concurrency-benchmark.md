@@ -140,6 +140,31 @@ batching 摊不掉多少，见结果三），所以把喂给 reranker 的候选�
 性价比最高的杠杆：一行配置改动换来 2.5 倍吞吐，此外还有截断候选文本
 长度、换更小的 rerank 模型等同类方向可以进一步榨。
 
+## 结果五：切到 BF16 后 RPS 没有变化——是否符合预期？
+
+结果四把 `reranker_candidate_k` 从 30 降到 10 后，RPS 到了 ~6.5。之后把
+reranker 精度从 FP16 切到 BF16（`RERANKER_DTYPE=bf16`），重新压测，RPS
+仍然在 6 左右，没有进一步提升。
+
+排查后确认**这是符合预期的结果，不是改动失败或遗留 bug**：在这块 GPU
+（GB10 / Blackwell，compute capability 12.1）上，FP16 和 BF16 走的是同
+一套 Tensor Core 执行单元，单次矩阵乘法吞吐完全一样——两者只是"同样
+16 bit 里指数位/尾数位怎么分配"的区别（BF16 范围更大、精度更低；FP16
+反过来），不存在谁比谁算得快。BF16 相对 FP16 的价值是**数值稳定性**
+（不易溢出、不需要 loss scaling），不是速度。
+
+用结果二同样的方法论实测验证（10 候选、~600+ 字符真实长度）：
+
+```
+fp16: 105.20 ms/call
+bf16: 106.51 ms/call
+```
+
+误差范围内完全一样。**结论：dtype（FP16 vs BF16）不是这块 GPU 上的吞吐
+杠杆，`reranker_candidate_k` 才是**——如果目标是继续提高 RPS，应该往
+"继续降 candidate_k / 换更小的 rerank 模型 / 截断候选文本长度"这几个
+方向走，而不是指望切精度格式。
+
 ## 意外发现：并发下的一个真实 bug（不是性能问题，是正确性问题）
 
 两次扫描里都出现了个别请求报错（30候选那次 c=2/4/32/64 各有 1~3 个；
@@ -180,3 +205,11 @@ fast tokenizer 在被 2 个线程同时调用时本身就不是线程安全的**
    没有明显掉分）。
 4. **`reranker_max_concurrency>=2` 时 HF fast tokenizer 并发调用不安全，
    会随机产生 500**——这是一个需要修的正确性 bug，优先级高于吞吐优化。
+   **已修复**：`app/models/reranker.py` 把 `threading.Semaphore(reranker_max_concurrency)`
+   换成了 `threading.Lock()`，完全串行化 `compute_score()` 调用，并整体
+   移除了 `reranker_max_concurrency` 配置项（结论 1 已经证明并发对吞吐
+   没有增益，串行化不损失性能）。见 `tests/unit/test_reranker_concurrency.py`
+   的回归测试。
+5. **切到 BF16 不会提升吞吐**（见结果五）——FP16/BF16 在这块 GPU 上
+   Tensor Core 吞吐相同，dtype 不是这里的性能杠杆，只是数值稳定性上的
+   改进。
