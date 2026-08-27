@@ -1,0 +1,4 @@
+mineru[pipeline]==3.4.5
+# mineru.model.utils.pytorchocr.data.imaug.operators does `import six`
+# without declaring it as a dependency -- add explicitly.
+six==1.17.0
