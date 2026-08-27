@@ -200,7 +200,7 @@ with gr.Blocks(title="检索服务管理界面") as demo:
         image_search_button.click(do_search_image, [query_image, image_top_k], image_search_result)
 
     with gr.Tab("上传文档"):
-        upload_file = gr.File(label="选择文件 (csv/txt/pdf/jpg/png/md)", type="filepath")
+        upload_file = gr.File(label="选择文件 (csv/txt/pdf/jpg/png/md/docx/pptx/xlsx)", type="filepath")
         with gr.Accordion("切分参数（不填用全局默认）", open=False):
             upload_chunk_size = gr.Number(label="chunk_size（字符数）", value=None)
             upload_chunk_overlap = gr.Number(label="chunk_overlap（字符数）", value=None)

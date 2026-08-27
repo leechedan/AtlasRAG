@@ -25,6 +25,7 @@ from app.config import settings
 from app.ingest.hashing import sha256_file
 from app.ingest.pipeline import (
     SUPPORTED_IMAGE_EXTS,
+    SUPPORTED_OFFICE_EXTS,
     SUPPORTED_TEXT_EXTS,
     ChunkOptions,
     delete_ingested_document,
@@ -36,7 +37,7 @@ from app.store.qdrant_client import (
     get_existing_content_hash,
 )
 
-SUPPORTED_EXTS = SUPPORTED_TEXT_EXTS | SUPPORTED_IMAGE_EXTS | {".csv", ".pdf"}
+SUPPORTED_EXTS = SUPPORTED_TEXT_EXTS | SUPPORTED_IMAGE_EXTS | SUPPORTED_OFFICE_EXTS | {".csv", ".pdf"}
 WATCHED_DIRS_KEY = "watched_directories"
 
 logger = logging.getLogger(__name__)

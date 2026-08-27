@@ -37,6 +37,14 @@ from app.store.qdrant_client import (
 
 SUPPORTED_TEXT_EXTS = {".txt", ".md"}
 SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
+# MinerU's office backend only understands the OOXML formats -- not the
+# legacy binary .doc/.ppt/.xls.
+SUPPORTED_OFFICE_EXTS = {".docx", ".pptx", ".xlsx"}
+
+# File types whose MinerU output is markdown, same as a PDF's -- these need
+# the heading/table-aware chunk_markdown_structured() chunker rather than
+# the plain char-level one (see _write_text_chunks below).
+_MINERU_MARKDOWN_FILE_TYPES = {"pdf"} | {ext.lstrip(".") for ext in SUPPORTED_OFFICE_EXTS}
 
 
 @dataclass
@@ -74,14 +82,16 @@ def _write_text_chunks(
     PDF page) so chunk_index values never collide and silently overwrite
     each other in Qdrant.
 
-    Markdown files (`file_type == "md"`) use the heading-AST-aware
+    Markdown files (`file_type == "md"`) and files whose text came from
+    MinerU (`file_type` in `_MINERU_MARKDOWN_FILE_TYPES` -- pdf/docx/pptx/
+    xlsx, all returned as markdown by MinerU) use the heading-AST-aware
     `chunk_markdown_structured()` instead of the char-level `chunk_text()`,
     so chunks respect section boundaries and never truncate a table/code
     block mid-element; each chunk's `heading_path`/`has_table`/
     `has_code_block` are carried into the stored record. Every other file
     type keeps the existing char-level chunker with those three fields left
     at their defaults (`None`/`False`/`False`)."""
-    if file_type in ("md", "pdf"):
+    if file_type == "md" or file_type in _MINERU_MARKDOWN_FILE_TYPES:
         structured_chunks = chunk_markdown_structured(
             text,
             chunk_size=chunk_options.chunk_size,
@@ -219,12 +229,12 @@ def _ingest_image_file(
     return written
 
 
-def _ingest_pdf_extracted_image(
-    client, doc_id: str, pdf_path: Path, idx: int, image: Image.Image, content_hash: str, origin: str, created_at: str
+def _ingest_mineru_extracted_image(
+    client, doc_id: str, doc_path: Path, idx: int, image: Image.Image, content_hash: str, origin: str, created_at: str
 ) -> str:
-    """入库 MinerU 从 PDF 里抽出的一张内嵌图片：持久化原图、生成缩略图、
-    做 CLIP 向量化。不调用 parse_image()——那个函数会跑一次不需要的 OCR，
-    风格上延续 _ingest_scanned_pdf_page 原本"直接内联 CLIP+缩略图"的做法。
+    """入库 MinerU 从 PDF/docx/pptx/xlsx 里抽出的一张内嵌图片：持久化原图、
+    生成缩略图、做 CLIP 向量化。不调用 parse_image()——那个函数会跑一次不需要的
+    OCR，风格上延续 _ingest_scanned_pdf_page 原本"直接内联 CLIP+缩略图"的做法。
     """
     img_doc_id = f"{doc_id}:img{idx}"
     persisted_path = settings.extracted_images_dir / f"{img_doc_id}.jpg"
@@ -235,7 +245,7 @@ def _ingest_pdf_extracted_image(
         client,
         ImageRecord(
             doc_id=img_doc_id,
-            source_path=f"{pdf_path}#img={idx}",
+            source_path=f"{doc_path}#img={idx}",
             thumbnail_path=thumbnail_path,
             width=image.width,
             height=image.height,
@@ -250,18 +260,20 @@ def _ingest_pdf_extracted_image(
     return img_doc_id
 
 
-def _ingest_pdf_file(
-    client, doc_id: str, path: Path, content_hash: str, chunk_options: ChunkOptions, origin: str, created_at: str
+def _ingest_mineru_document(
+    client, doc_id: str, path: Path, file_type: str, content_hash: str, chunk_options: ChunkOptions, origin: str, created_at: str
 ) -> int:
+    """Ingest a file whose content MinerU turns into one markdown document:
+    pdf, or (via SUPPORTED_OFFICE_EXTS) docx/pptx/xlsx."""
     parsed = parse_pdf_to_markdown(path)
     text = parsed.markdown_text
-    for idx, pdf_image in enumerate(parsed.images, start=1):
-        img_doc_id = _ingest_pdf_extracted_image(
-            client, doc_id, path, idx, pdf_image.image, content_hash, origin=origin, created_at=created_at
+    for idx, doc_image in enumerate(parsed.images, start=1):
+        img_doc_id = _ingest_mineru_extracted_image(
+            client, doc_id, path, idx, doc_image.image, content_hash, origin=origin, created_at=created_at
         )
-        text = text.replace(f"images/{pdf_image.filename}", f"/documents/{img_doc_id}/image")
+        text = text.replace(f"images/{doc_image.filename}", f"/documents/{img_doc_id}/image")
     return _write_text_chunks(
-        client, doc_id, str(path), "pdf", text, None, "normal", content_hash, chunk_options,
+        client, doc_id, str(path), file_type, text, None, "normal", content_hash, chunk_options,
         origin=origin, created_at=created_at,
     )
 
@@ -302,8 +314,10 @@ def ingest_file(
             written = _write_csv_chunks(client, doc_id, str(path), chunks, content_hash, origin=origin, created_at=created_at)
         elif ext in SUPPORTED_IMAGE_EXTS:
             written = _ingest_image_file(client, doc_id, path, content_hash, chunk_options, origin=origin, created_at=created_at)
-        elif ext == ".pdf":
-            written = _ingest_pdf_file(client, doc_id, path, content_hash, chunk_options, origin=origin, created_at=created_at)
+        elif ext == ".pdf" or ext in SUPPORTED_OFFICE_EXTS:
+            written = _ingest_mineru_document(
+                client, doc_id, path, ext.lstrip("."), content_hash, chunk_options, origin=origin, created_at=created_at
+            )
         else:
             raise ValueError(f"unsupported file extension: {ext}")
 

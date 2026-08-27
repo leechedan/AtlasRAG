@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from PIL import Image
 
 from app.ingest.parsers.pdf_parser import ParsedPdfDocument, ParsedPdfImage
@@ -247,3 +248,55 @@ def test_ingest_pdf_writes_structured_chunks_and_extracted_images(
     assert img1 is not None and img1["width"] == 20 and img1["has_ocr_text"] is False
     assert img2 is not None and img2["width"] == 30
     assert img1["image_path"] is not None and Path(img1["image_path"]).exists()
+
+
+@pytest.mark.parametrize("ext", [".docx", ".pptx", ".xlsx"])
+@patch("app.ingest.pipeline.get_clip_embedder")
+@patch("app.ingest.pipeline.get_text_embedder")
+@patch("app.ingest.pipeline.parse_pdf_to_markdown")
+def test_ingest_office_doc_routes_through_mineru_with_structured_chunks(
+    mock_parse_pdf, mock_get_text_embedder, mock_get_clip_embedder, tmp_path, monkeypatch, ext
+):
+    """docx/pptx/xlsx must go through the same MinerU call as PDF
+    (parse_pdf_to_markdown), be tagged with their own file_type (not "pdf"),
+    and use the heading/table-aware structured chunker -- MinerU returns
+    markdown for these formats too, same as PDF."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    settings.extracted_images_dir.mkdir(parents=True, exist_ok=True)
+    settings.thumbnails_dir.mkdir(parents=True, exist_ok=True)
+
+    markdown_text = "# 标题\n\n## 一、简介\n\n正文内容。\n"
+    mock_parse_pdf.return_value = ParsedPdfDocument(markdown_text=markdown_text, images=[])
+
+    mock_get_text_embedder.return_value.embed.side_effect = lambda texts: [
+        DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5}) for _ in texts
+    ]
+
+    doc_path = tmp_path / f"report{ext}"
+    doc_path.write_bytes(b"fake office bytes")
+
+    client = make_client()
+    result = ingest_file(doc_path, source_ref=str(doc_path), client=client)
+
+    assert result.status == "ingested"
+    mock_parse_pdf.assert_called_once_with(doc_path)
+
+    stored_chunks = list_chunks_for_document(client, result.doc_id)
+    assert stored_chunks
+    assert all(c["file_type"] == ext.lstrip(".") for c in stored_chunks)
+    assert any(c["heading_path"] for c in stored_chunks)
+
+
+def test_ingest_legacy_office_extension_is_unsupported(tmp_path):
+    """MinerU's office backend only understands OOXML (.docx/.pptx/.xlsx) --
+    the legacy binary .doc must stay unsupported, not silently accepted."""
+    f = tmp_path / "old.doc"
+    f.write_bytes(b"not ooxml")
+
+    client = make_client()
+    result = ingest_file(f, source_ref=str(f), client=client)
+
+    assert result.status == "failed"
+    assert result.error is not None

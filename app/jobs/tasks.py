@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.ingest.pipeline import (
     SUPPORTED_IMAGE_EXTS,
+    SUPPORTED_OFFICE_EXTS,
     SUPPORTED_TEXT_EXTS,
     ChunkOptions,
     delete_ingested_document,
@@ -15,7 +16,7 @@ from app.ingest.pipeline import (
 from app.jobs.queue import get_redis_connection
 from app.jobs.status import create_job_status, update_job_file_result
 
-SUPPORTED_EXTS = SUPPORTED_TEXT_EXTS | SUPPORTED_IMAGE_EXTS | {".csv", ".pdf"}
+SUPPORTED_EXTS = SUPPORTED_TEXT_EXTS | SUPPORTED_IMAGE_EXTS | SUPPORTED_OFFICE_EXTS | {".csv", ".pdf"}
 
 
 def ingest_file_job(
