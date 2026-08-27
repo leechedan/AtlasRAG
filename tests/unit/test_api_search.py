@@ -162,6 +162,7 @@ def test_search_text_pool_size_uses_larger_of_candidate_k_and_top_k(monkeypatch)
         return []
 
     monkeypatch.setattr(settings, "reranker_candidate_k", 7)
+    monkeypatch.setattr(settings, "reranker_enabled", True)
     client = make_client(monkeypatch)
     monkeypatch.setattr("app.api.routes.search.search_text_hybrid", capturing_search_text_hybrid)
 
