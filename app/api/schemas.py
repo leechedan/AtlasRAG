@@ -111,3 +111,4 @@ class EndpointInfo(BaseModel):
     summary: str | None = None
     description: str | None = None
     tags: list[str] = []
+    response_fields: list[str] | None = None
