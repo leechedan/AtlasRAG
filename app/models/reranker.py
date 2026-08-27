@@ -16,7 +16,7 @@ _DTYPE_CASTS = {
 
 
 class Reranker:
-    def __init__(self, model_name: str, max_concurrency: int, dtype: str = "bf16"):
+    def __init__(self, model_name: str, dtype: str = "bf16"):
         if dtype not in _DTYPE_CASTS:
             raise ValueError(f"Unsupported reranker_dtype: {dtype!r} (expected one of {sorted(_DTYPE_CASTS)})")
 
@@ -29,15 +29,23 @@ class Reranker:
         # FlagEmbedding never touches dtype again after construction.
         self._model = FlagReranker(model_name, use_fp16=False, normalize=True, device=device)
         self._model.model.to(dtype=_DTYPE_CASTS[dtype])
-        self._semaphore = threading.Semaphore(max_concurrency)
+        # A plain Lock (not a Semaphore admitting >1 caller), because the
+        # HF fast tokenizer compute_score() calls into is not thread-safe:
+        # concurrent calls hit "RuntimeError: Already borrowed" from the
+        # Rust tokenizer's internal RefCell (see docs/concurrency-benchmark.md).
+        # Serializing costs nothing in practice -- that same benchmark found
+        # a single request already saturates GPU compute (88%+ utilization
+        # at concurrency=1), so concurrent inference wasn't buying any real
+        # throughput to begin with.
+        self._lock = threading.Lock()
 
     def score(self, query: str, texts: list[str]) -> list[float]:
         pairs = [(query, text) for text in texts]
-        with self._semaphore:
+        with self._lock:
             scores = self._model.compute_score(pairs)
         return [float(s) for s in scores]
 
 
 @lru_cache(maxsize=1)
 def get_reranker() -> Reranker:
-    return Reranker(settings.reranker_model_name, settings.reranker_max_concurrency, settings.reranker_dtype)
+    return Reranker(settings.reranker_model_name, settings.reranker_dtype)

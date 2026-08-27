@@ -18,7 +18,6 @@ class Settings(BaseSettings):
     reranker_enabled: bool = True
     reranker_model_name: str = "BAAI/bge-reranker-v2-m3"
     reranker_candidate_k: int = 10
-    reranker_max_concurrency: int = 2
     reranker_dtype: str = "bf16"
     ocr_lang: str = "ch"
     mineru_backend: str = "pipeline"

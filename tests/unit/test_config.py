@@ -5,7 +5,6 @@ def test_reranker_settings_have_expected_defaults():
     assert settings.reranker_enabled is True
     assert settings.reranker_model_name == "BAAI/bge-reranker-v2-m3"
     assert settings.reranker_candidate_k == 10
-    assert settings.reranker_max_concurrency == 2
     assert settings.reranker_dtype == "bf16"
 
 
