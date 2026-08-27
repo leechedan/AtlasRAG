@@ -100,7 +100,10 @@ services:
     restart: unless-stopped
     healthcheck:
       # /health only returns 200 once the lifespan hook in app/api/main.py
-      # has finished loading both model singletons (Important Finding I1).
+      # has finished loading all model singletons (Important Finding I1)
+      # AND Qdrant/Redis both answer a live probe -- so restart: unless-stopped
+      # alone won't mask "container up, models loaded, but Qdrant/Redis
+      # unreachable" as healthy.
       # python3 (not curl -- confirmed absent from this python:3.12-slim
       # image via `docker run --rm <api-image> which curl`) is guaranteed
       # present since it's the base image's own interpreter. A non-200
