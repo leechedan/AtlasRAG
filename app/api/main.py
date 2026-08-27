@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import chunks, collections, directories, documents, health, jobs, search
+from app.api.routes import chunks, collections, directories, documents, endpoints, health, jobs, search
 from app.config import settings
 from app.models.clip_model import get_clip_embedder
 from app.models.embeddings import get_text_embedder
@@ -63,3 +63,4 @@ app.include_router(chunks.router)
 app.include_router(directories.router)
 app.include_router(jobs.router)
 app.include_router(collections.router)
+app.include_router(endpoints.router)

@@ -9,7 +9,8 @@
 
 1. 文字检索（关键词 + 语义向量混合检索）
 2. 图片检索（以图搜图 / 以文搜图跨模态检索）
-3. 文档上传入库（支持 csv / txt / pdf / jpg / png / md）
+3. 文档上传入库（支持 csv / txt / pdf / jpg / png / md，2026-08-26 起 PDF
+   解析方案替换为 MinerU 后新增 docx / pptx / xlsx，见第 5 节）
 4. 指定本地目录，批量 + 持续监听将目录内容自动入库
 
 服务定位：既作为 LangGraph agent 的检索工具（tool call），也作为独立的内网 HTTP API 服务供其他系统直接调用。仅内网访问，v1 不做鉴权。
@@ -33,10 +34,13 @@
                          │   └────┬────┘
                          │        │
                          ▼        ▼
-                     ┌──────────────────┐
-                     │  Worker 进程       │  ← 加载 BGE-M3 + Chinese-CLIP + PaddleOCR(CPU)
-                     │  解析/OCR/切分/向量化│     (GPU，走入库路径)
-                     │  + 目录监听(watchdog)│
+                     ┌──────────────────┐        ┌────────────────────┐
+                     │  Worker 进程       │  HTTP  │   mineru-api 服务    │
+                     │  解析/OCR/切分/向量化│───────▶│  PDF/docx/pptx/xlsx │
+                     │  + 目录监听(watchdog)│◀───────│  → 结构化 Markdown  │
+                     │  ← BGE-M3+CLIP(GPU) │ MD+图片 │   + 内嵌图片列表     │
+                     │  + PaddleOCR(CPU,   │        │   (自己的 GPU 容器)  │
+                     │    仅 jpg/png 独立图)│        └────────────────────┘
                      └────────┬──────────┘
                               │ upsert
                      ┌────────▼─────────┐
@@ -52,6 +56,15 @@
 - Admin UI（Gradio）只通过 HTTP 调用 API，不直连 DB，保证和外部调用者体验一致
 
 全部服务通过 Docker Compose 编排，单机部署。
+
+> **2026-08-26 更新**：PDF（以及新增支持的 docx/pptx/xlsx）解析方案从最初的
+> "Worker 进程内 PyMuPDF 抽取文字层 + PaddleOCR 兜底扫描页"（见下方第 5 节
+> 原始设计）替换为调用独立的 **`mineru-api` 服务**（`Dockerfile.mineru` 构建，
+> 常驻加载 MinerU 模型，自己占一块 GPU）。Worker 通过 HTTP 把文件发给
+> `mineru-api`，拿回统一的结构化 Markdown（保留标题层级/列表/表格）+ 内嵌
+> 图片列表，不再自己做版面分析/OCR。PaddleOCR(CPU) 仍保留在 Worker 里，但
+> 现在只用于独立上传的 jpg/png 图片文字提取，不再参与 PDF 处理。换方案的
+> 详细原因见 `docs/QA.md` Q19。
 
 ## 3. 数据模型（Qdrant）
 
@@ -76,16 +89,33 @@ images  (图片检索用)
 
 ## 4. API 接口
 
+> **2026-08-27 更新**：下表已按 `app/api/routes/` 实际代码同步（原表只覆盖
+> v1 设计阶段规划的 8 个接口，实现过程中新增了 chunk 分页浏览、文档级别的
+> 图片/缩略图访问、任务列表/删除、目录监听移除等接口，原表未跟进更新过，
+> 属于文档滞后于代码的情况）。为避免这张表以后再次和代码脱节，新增了一个
+> **自省式** 的 `GET /endpoints`（见下方说明），会随代码自动保持准确，这
+> 张手写表格之后仅作架构层面的说明用途，接口明细以 `GET /endpoints` 或
+> `GET /docs`（FastAPI 自带的 OpenAPI/Swagger UI）的实时输出为准。
+
 | 接口 | 说明 |
 |---|---|
-| `POST /search/text` | 文字查询 → text_chunks 混合检索（关键词+向量），可选 `modalities: [text, image]` 同时用 CLIP 文本编码器跨模态检索图片 |
-| `POST /search/image` | 上传图片查询 → images 集合按视觉相似度检索，返回关联的 OCR 文字（如有） |
-| `POST /documents/upload` | 上传单文件（csv/txt/pdf/jpg/png/md），异步入库，返回 job_id |
+| `POST /search/text` | 文字查询 → text_chunks 混合检索（dense+sparse+全文子串兜底三路 RRF 融合），可选 `modalities: [text, image]` 同时用 CLIP 文本编码器跨模态检索图片 |
+| `POST /search/image` | 上传图片查询 → images 集合按 CLIP 视觉相似度检索，返回关联的 OCR/正文文字（如有） |
+| `POST /documents/upload` | 上传单文件（csv/txt/pdf/jpg/png/md/docx/pptx/xlsx），异步入库，返回 job_id |
+| `GET /documents` | 列出所有已入库文档（含关联图片摘要） |
+| `GET /documents/{doc_id}/chunks` | 查某文档的全部 chunk（按 chunk_index 排序） |
+| `GET /documents/{doc_id}/thumbnail` | 返回某文档关联图片的缩略图字节（Admin UI 等外部调用方无法直连 api/worker 容器磁盘，必须经此接口） |
+| `GET /documents/{doc_id}/image` | 返回 MinerU 抽取的原图字节（同上，PDF 内嵌图片场景） |
+| `DELETE /documents/{doc_id}` | 删除某文档及其所有 chunk/向量（含级联清理关联的内嵌图片） |
 | `POST /directories/index` | 指定本地目录路径，`recursive`/`watch` 参数控制是否递归、是否持续监听，返回 job_id |
-| `GET /jobs/{job_id}` | 查入库任务进度/结果（含逐文件成功/失败明细） |
-| `DELETE /documents/{doc_id}` | 删除某文档及其所有 chunk/向量 |
-| `GET /collections/stats` | 文档数/向量数/最近任务，供 Admin UI 状态面板使用 |
-| `GET /health` | 健康检查 |
+| `DELETE /directories/watch` | 移除一条已注册的目录监听（历史脏数据/坏路径的清理入口） |
+| `GET /jobs/{job_id}` | 查单个入库任务进度/结果（含逐文件成功/失败明细） |
+| `GET /jobs` | 列出全部任务状态摘要 |
+| `DELETE /jobs/{job_id}` | 删除某任务状态记录 |
+| `GET /chunks` | 分页浏览全部 chunk（游标分页，供 Admin UI 数据浏览页使用） |
+| `GET /collections/stats` | 文档数/向量数，供 Admin UI 状态面板使用 |
+| `GET /endpoints` | **2026-08-27 新增**：自省 FastAPI 自身路由表（`request.app.routes` 里的 `APIRoute`），实时返回当前所有业务接口的 method/path/name/summary/description/tags，排除 `/docs`、`/redoc`、`/openapi.json` 等 FastAPI 内部路由。用来替代容易过期的手写接口清单 |
+| `GET /health` | 健康检查（`/health` 返回 200 才代表 BGE-M3/Chinese-CLIP 两个模型单例已真正加载完成，见第 7 节） |
 
 另提供一个轻量 Python 客户端封装（`@tool` 装饰的函数），包装 `/search/text`、`/search/image`，直接给 LangGraph agent 当工具用。
 
@@ -95,10 +125,10 @@ images  (图片检索用)
 
 | 类型 | 处理方式 |
 |---|---|
-| txt/md | 直接读取，用 LangChain splitter 按 ~500-800 token 切分（带 overlap） |
+| txt/md | 直接读取，按结构化 Markdown 切片器分组切分（标题/段落/表格/代码块等块级单元，带 overlap，见 `docs/markdown-chunker-overlap-fix.md`） |
 | csv | pandas 解析，按行分组切分，每个 chunk 带表头上下文 |
-| pdf | PyMuPDF 提取文字层；某页文字层为空/很少（扫描件）→ 栅格化该页跑 OCR，同时该页图像存入 `images` 集合（可视觉检索到扫描页） |
-| jpg/png | PaddleOCR 提取文字（有文字则存入 `text_chunks`）+ Chinese-CLIP 生成图像向量（存入 `images`）+ 生成缩略图供 Admin UI 预览 |
+| pdf / docx / pptx / xlsx | ~~PyMuPDF 提取文字层；某页文字层为空/很少（扫描件）→ 栅格化该页跑 OCR，同时该页图像存入 `images` 集合~~（**2026-08-26 起替换**，详见上方第 2 节更新说明与 `docs/QA.md` Q19）：统一调用 `mineru-api` 服务转成保留标题层级/列表/HTML 表格的结构化 Markdown（不区分文字层 PDF 还是扫描 PDF，也不区分文字来自扫描页还是文字层），正文复用 txt/md 同一套结构化切片器；内嵌图片单独抽取存入 `images` 集合（CLIP 向量化），正文中的图片引用改写为指向 `GET /documents/{doc_id}/image` 的可访问链接。明确不做页码级定位（`page` 字段统一为 `None`）。 |
+| jpg/png | PaddleOCR 提取文字（有文字则存入 `text_chunks`）+ Chinese-CLIP 生成图像向量（存入 `images`）+ 生成缩略图供 Admin UI 预览（此路径未变） |
 
 **目录监听：** `watchdog` 实时监听文件创建/修改/删除 → 触发对应入库/删除任务；每小时兜底全量扫描（防止服务重启期间漏事件），靠 `content_hash` 判断文件是否真变化，未变化则跳过（避免重复消耗 GPU）。文件删除/移动时联动删除 Qdrant 中对应向量记录。
 
@@ -111,7 +141,8 @@ images  (图片检索用)
 | `qdrant` | 官方镜像 `qdrant/qdrant`，原生 arm64 支持 | 否，纯 CPU |
 | `redis` | `redis:7`，任务队列 + job 状态 | 否 |
 | `api` | 自建镜像，FastAPI + Uvicorn，常驻加载 BGE-M3 + Chinese-CLIP | 是 |
-| `worker` | 同代码不同启动命令，常驻加载 BGE-M3 + Chinese-CLIP + PaddleOCR(CPU)，内置目录监听线程 | 是 |
+| `worker` | 同代码不同启动命令，常驻加载 BGE-M3 + Chinese-CLIP + PaddleOCR(CPU，仅 jpg/png)，内置目录监听线程 | 是 |
+| `mineru` | **2026-08-26 新增**，`Dockerfile.mineru` 构建，`mineru-api` 常驻服务，Worker 处理 pdf/docx/pptx/xlsx 时通过 HTTP 调用它转 Markdown | 是 |
 | `admin-ui` | Gradio，纯 HTTP 调用 api | 否 |
 
 **GPU/ARM64 环境结论（已用社区实证信息核实）：**

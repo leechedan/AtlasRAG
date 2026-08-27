@@ -102,3 +102,12 @@ class ChunkOut(BaseModel):
 class ChunksPageOut(BaseModel):
     chunks: list[ChunkOut]
     next_cursor: str | None
+
+
+class EndpointInfo(BaseModel):
+    path: str
+    methods: list[str]
+    name: str
+    summary: str | None = None
+    description: str | None = None
+    tags: list[str] = []
