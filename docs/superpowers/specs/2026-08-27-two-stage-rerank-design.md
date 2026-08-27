@@ -117,8 +117,11 @@
 - `app/retrieval/rerank.py` 的 `apply_rerank` 单独写单测（纯函数，传入
   假的 `SearchHit` 列表和一个打桩的 `score()` 返回值，断言排序/截断逻
   辑），不依赖真实模型。
-- 不新增真实加载 `bge-reranker-v2-m3` 的集成测试（模型下载/GPU 依赖
-  重，参照现有 embedder/clip 集成测试的取舍）。
+- `app/models/reranker.py` 参照 `tests/unit/test_embeddings.py` /
+  `test_clip_model.py` 的既有约定，加一个 `pytest.mark.slow`（本地默认
+  跳过，CI/上线前手动跑）的真实模型测试，验证 `get_reranker()` 单例、以
+  及一条明显相关和一条明显不相关的 `(query, text)` 对分数确实拉开差
+  距，不需要额外新增基建。
 
 ## 文档更新
 
