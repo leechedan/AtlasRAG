@@ -5,6 +5,8 @@ pipeline. See docs/superpowers/specs/2026-08-27-two-stage-rerank-design.md.
 import threading
 from functools import lru_cache
 
+import torch
+
 from app.config import settings
 
 
@@ -12,7 +14,8 @@ class Reranker:
     def __init__(self, model_name: str, max_concurrency: int):
         from FlagEmbedding import FlagReranker
 
-        self._model = FlagReranker(model_name, use_fp16=True, normalize=True)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model = FlagReranker(model_name, use_fp16=True, normalize=True, device=device)
         self._semaphore = threading.Semaphore(max_concurrency)
 
     def score(self, query: str, texts: list[str]) -> list[float]:
