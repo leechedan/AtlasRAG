@@ -8,6 +8,7 @@ from app.api.routes import chunks, collections, directories, documents, endpoint
 from app.config import settings
 from app.models.clip_model import get_clip_embedder
 from app.models.embeddings import get_text_embedder
+from app.models.reranker import get_reranker
 
 # Without this, `logger.info(...)` calls below (and everywhere else in this
 # process) are silently dropped: Python's logging module only emits INFO
@@ -50,6 +51,14 @@ async def lifespan(app: FastAPI):
     start = time.monotonic()
     get_clip_embedder()
     logger.info("Startup: CLIP embedder loaded (%.1fs)", time.monotonic() - start)
+
+    if settings.reranker_enabled:
+        logger.info("Startup: loading reranker (%s)...", settings.reranker_model_name)
+        start = time.monotonic()
+        get_reranker()
+        logger.info("Startup: reranker loaded (%.1fs)", time.monotonic() - start)
+    else:
+        logger.info("Startup: reranker disabled (RERANKER_ENABLED=false); skipping preload")
 
     logger.info("Startup complete; ready to accept requests")
     yield

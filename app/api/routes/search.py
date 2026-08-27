@@ -54,7 +54,9 @@ def search_text(
 
     if "text" in request.modalities:
         query_vector = text_embedder.embed([request.query])[0]
-        pool_size = settings.reranker_candidate_k if settings.reranker_enabled else request.top_k
+        pool_size = (
+            max(settings.reranker_candidate_k, request.top_k) if settings.reranker_enabled else request.top_k
+        )
         text_hits = search_text_hybrid(
             store, query_vector, query_text=request.query, top_k=request.top_k, pool_size=pool_size
         )

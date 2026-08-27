@@ -1,3 +1,4 @@
+from app.config import settings
 from app.models.clip_model import get_clip_embedder
 from app.models.embeddings import get_text_embedder
 from app.models.reranker import get_reranker
@@ -17,4 +18,4 @@ def get_clip_embedder_dep():
 
 
 def get_reranker_dep():
-    return get_reranker()
+    return get_reranker() if settings.reranker_enabled else None

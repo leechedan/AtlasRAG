@@ -152,3 +152,20 @@ def test_search_text_skips_rerank_when_disabled(monkeypatch):
 
     assert [h["doc_id"] for h in body["text_hits"]] == ["low", "high"]
     app.dependency_overrides.clear()
+
+
+def test_search_text_pool_size_uses_larger_of_candidate_k_and_top_k(monkeypatch):
+    captured = {}
+
+    def capturing_search_text_hybrid(*args, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(settings, "reranker_candidate_k", 7)
+    client = make_client(monkeypatch)
+    monkeypatch.setattr("app.api.routes.search.search_text_hybrid", capturing_search_text_hybrid)
+
+    client.post("/search/text", json={"query": "你好", "top_k": 20})
+
+    assert captured["pool_size"] == 20
+    app.dependency_overrides.clear()
