@@ -51,7 +51,7 @@ def search_text(
 
     if "text" in request.modalities:
         query_vector = text_embedder.embed([request.query])[0]
-        text_hits = search_text_hybrid(store, query_vector, top_k=request.top_k)
+        text_hits = search_text_hybrid(store, query_vector, query_text=request.query, top_k=request.top_k)
 
     if "image" in request.modalities:
         clip_query_vector = clip_embedder.embed_text(request.query)

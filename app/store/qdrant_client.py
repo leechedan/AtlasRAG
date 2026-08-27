@@ -27,6 +27,20 @@ def ensure_collections(client: QdrantClient) -> None:
             vectors_config={"dense": models.VectorParams(size=TEXT_DENSE_DIM, distance=models.Distance.COSINE)},
             sparse_vectors_config={"sparse": models.SparseVectorParams()},
         )
+    # 全文索引，用于专有名词/术语的精确子串兜底匹配（见 search_text_hybrid
+    # 里的第三路 prefetch）：向量检索对生僻实体容易语义模糊，全文索引保证
+    # 只要词在原文里逐字出现就能被召回。create_payload_index 对已存在的同
+    # 名同 schema 索引是幂等的，可以每次 ensure_collections 都无条件调用。
+    client.create_payload_index(
+        collection_name=TEXT_COLLECTION,
+        field_name="text",
+        field_schema=models.TextIndexParams(
+            type=models.TextIndexType.TEXT,
+            tokenizer=models.TokenizerType.MULTILINGUAL,
+            min_token_len=2,
+            lowercase=True,
+        ),
+    )
     if not client.collection_exists(IMAGE_COLLECTION):
         client.create_collection(
             collection_name=IMAGE_COLLECTION,
@@ -135,19 +149,36 @@ def upsert_image(client: QdrantClient, record: ImageRecord, vector: list[float])
     )
 
 
-def search_text_hybrid(client: QdrantClient, query: DenseSparseVector, top_k: int = 10) -> list[SearchHit]:
+def search_text_hybrid(
+    client: QdrantClient, query: DenseSparseVector, query_text: str | None = None, top_k: int = 10
+) -> list[SearchHit]:
+    prefetch = [
+        models.Prefetch(query=query.dense, using="dense", limit=top_k * 2),
+        models.Prefetch(
+            query=models.SparseVector(
+                indices=list(query.sparse.keys()), values=list(query.sparse.values())
+            ),
+            using="sparse",
+            limit=top_k * 2,
+        ),
+    ]
+    # 第三路：精确子串匹配兜底。专有名词/术语的向量语义有时会被稀释掉，
+    # 但只要原文里逐字出现该词，全文索引的 MatchText 就能把它捞回来参与
+    # RRF 融合，而不是完全依赖 dense/sparse 的语义相似度排序。
+    if query_text and query_text.strip():
+        prefetch.append(
+            models.Prefetch(
+                query=query.dense,
+                using="dense",
+                filter=models.Filter(
+                    must=[models.FieldCondition(key="text", match=models.MatchText(text=query_text))]
+                ),
+                limit=top_k * 2,
+            )
+        )
     result = client.query_points(
         collection_name=TEXT_COLLECTION,
-        prefetch=[
-            models.Prefetch(query=query.dense, using="dense", limit=top_k * 2),
-            models.Prefetch(
-                query=models.SparseVector(
-                    indices=list(query.sparse.keys()), values=list(query.sparse.values())
-                ),
-                using="sparse",
-                limit=top_k * 2,
-            ),
-        ],
+        prefetch=prefetch,
         query=models.FusionQuery(fusion=models.Fusion.RRF),
         limit=top_k,
     )
