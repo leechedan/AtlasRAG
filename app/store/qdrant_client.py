@@ -150,16 +150,21 @@ def upsert_image(client: QdrantClient, record: ImageRecord, vector: list[float])
 
 
 def search_text_hybrid(
-    client: QdrantClient, query: DenseSparseVector, query_text: str | None = None, top_k: int = 10
+    client: QdrantClient,
+    query: DenseSparseVector,
+    query_text: str | None = None,
+    top_k: int = 10,
+    pool_size: int | None = None,
 ) -> list[SearchHit]:
+    limit = pool_size if pool_size is not None else top_k
     prefetch = [
-        models.Prefetch(query=query.dense, using="dense", limit=top_k * 2),
+        models.Prefetch(query=query.dense, using="dense", limit=limit * 2),
         models.Prefetch(
             query=models.SparseVector(
                 indices=list(query.sparse.keys()), values=list(query.sparse.values())
             ),
             using="sparse",
-            limit=top_k * 2,
+            limit=limit * 2,
         ),
     ]
     # 第三路：精确子串匹配兜底。专有名词/术语的向量语义有时会被稀释掉，
@@ -173,14 +178,14 @@ def search_text_hybrid(
                 filter=models.Filter(
                     must=[models.FieldCondition(key="text", match=models.MatchText(text=query_text))]
                 ),
-                limit=top_k * 2,
+                limit=limit * 2,
             )
         )
     result = client.query_points(
         collection_name=TEXT_COLLECTION,
         prefetch=prefetch,
         query=models.FusionQuery(fusion=models.Fusion.RRF),
-        limit=top_k,
+        limit=limit,
     )
     return [SearchHit(score=p.score, payload=p.payload) for p in result.points]
 

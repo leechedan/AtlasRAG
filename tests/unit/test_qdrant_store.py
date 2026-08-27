@@ -519,3 +519,20 @@ def test_scroll_chunks_empty_collection_returns_empty_page():
     chunks, cursor = scroll_chunks(client)
     assert chunks == []
     assert cursor is None
+
+
+def test_search_text_hybrid_pool_size_widens_candidate_limit():
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    for i in range(5):
+        record = TextChunkRecord(
+            doc_id=f"doc{i}", chunk_index=0, text=f"内容 {i}", source_path=f"/{i}.txt",
+            file_type="txt", page=None, source_type="normal", content_hash=f"h{i}",
+        )
+        upsert_text_chunk(client, record, vec)
+
+    hits_default = search_text_hybrid(client, vec, top_k=2)
+    assert len(hits_default) == 2
+
+    hits_pooled = search_text_hybrid(client, vec, top_k=2, pool_size=5)
+    assert len(hits_pooled) == 5
