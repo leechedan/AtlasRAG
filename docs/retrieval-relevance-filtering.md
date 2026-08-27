@@ -200,6 +200,9 @@ retrieval-service-design.md` 第 2 节"组件划分理由"原文写的是——�
 方案 A 的排序部分（RRF 粗筛 top-N 候选池 + cross-encoder 精排，两阶段
 架构）已按 `docs/superpowers/specs/2026-08-27-two-stage-rerank-design.md`
 实施：`/search/text` 默认走两阶段 rerank（`reranker_enabled=False` 可关
-闭回退到单阶段 RRF）。方案 B（透传命中路径信号）以及"完全不相关时接口
-具体该返回什么（空列表 vs 带信号继续返回）"仍未实施/未决定，留待后续按
-需求优先级排期。
+闭回退到单阶段 RRF）。有意的行为变化：`reranker_enabled=True` 时，
+`/search/text` 文本命中的 `score` 字段不再是本文档前面讨论的 RRF 融合
+分数，而是 cross-encoder 过 sigmoid 后的相关度分数（0~1，跨查询可比），
+这正是后续阈值过滤工作的前提条件。方案 B（透传命中路径信号）以及"完全
+不相关时接口具体该返回什么（空列表 vs 带信号继续返回）"仍未实施/未决
+定，留待后续按需求优先级排期。
