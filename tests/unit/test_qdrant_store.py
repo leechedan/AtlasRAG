@@ -190,6 +190,42 @@ def test_delete_document_removes_chunks():
     assert get_existing_content_hash(client, "doc3") is None
 
 
+def test_delete_document_removes_pdf_extracted_images(tmp_path):
+    # 复现 pipeline._ingest_mineru_extracted_image 用组合 doc_id 存图片记录的
+    # 场景：doc_id 字段是 "docPdf:img1"，不是父文档的 "docPdf"。
+    client = make_client()
+    vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})
+    upsert_text_chunk(
+        client,
+        TextChunkRecord(
+            doc_id="docPdf", chunk_index=0, text="正文", source_path="/d.pdf",
+            file_type="pdf", page=None, source_type="normal", content_hash="h4",
+        ),
+        vec,
+    )
+
+    image_path = tmp_path / "img1.jpg"
+    thumbnail_path = tmp_path / "img1_thumb.jpg"
+    image_path.write_bytes(b"fake-jpeg")
+    thumbnail_path.write_bytes(b"fake-thumb")
+    upsert_image(
+        client,
+        ImageRecord(
+            doc_id="docPdf:img1", source_path="/d.pdf#img=1", thumbnail_path=str(thumbnail_path),
+            width=10, height=10, has_ocr_text=False, content_hash="h4",
+            image_path=str(image_path),
+        ),
+        [0.2] * 512,
+    )
+
+    delete_document(client, "docPdf")
+
+    assert find_image_by_doc_id(client, "docPdf:img1") is None
+    assert get_stats(client)["images_count"] == 0
+    assert not image_path.exists()
+    assert not thumbnail_path.exists()
+
+
 def test_list_chunks_for_document_returns_ordered_payloads():
     client = make_client()
     vec = DenseSparseVector(dense=[0.1] * 1024, sparse={1: 0.5})

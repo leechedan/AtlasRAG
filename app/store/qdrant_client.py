@@ -196,6 +196,32 @@ def delete_document(client: QdrantClient, doc_id: str) -> None:
     flt = models.Filter(must=[models.FieldCondition(key="doc_id", match=models.MatchValue(value=doc_id))])
     client.delete(collection_name=TEXT_COLLECTION, points_selector=models.FilterSelector(filter=flt))
     client.delete(collection_name=IMAGE_COLLECTION, points_selector=models.FilterSelector(filter=flt))
+    _delete_related_pdf_images(client, doc_id)
+
+
+def _delete_related_pdf_images(client: QdrantClient, doc_id: str) -> None:
+    """删除一份 PDF 内嵌图片的 image 记录（及其磁盘文件）。
+
+    这些记录用组合 doc_id 存储：`f"{doc_id}:img{idx}"`（见
+    `pipeline._ingest_mineru_extracted_image`），doc_id 字段本身并不等于父
+    文档的 doc_id，上面按精确匹配做的 delete 捞不到它们。不清理的话就会
+    变成孤儿点——list_all_documents 找不到父文档（已被删掉），就把每张
+    图片当成独立文档展示出来，表现为"删除 PDF 后关联图片全部散落成单独
+    的文档记录"。
+    """
+    prefix = f"{doc_id}:"
+    stray = [p for p in _scroll_all(client, IMAGE_COLLECTION) if p.payload.get("doc_id", "").startswith(prefix)]
+    if not stray:
+        return
+    client.delete(
+        collection_name=IMAGE_COLLECTION,
+        points_selector=models.PointIdsList(points=[p.id for p in stray]),
+    )
+    for p in stray:
+        for path_field in ("image_path", "thumbnail_path"):
+            path_str = p.payload.get(path_field)
+            if path_str:
+                Path(path_str).unlink(missing_ok=True)
 
 
 def get_existing_content_hash(client: QdrantClient, doc_id: str) -> str | None:

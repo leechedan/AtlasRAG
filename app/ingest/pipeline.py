@@ -170,14 +170,14 @@ def _cleanup_stale_doc_ids(client, doc_id: str, source_path: str) -> None:
     remain in Qdrant forever, growing the index unbounded and making search
     return stale content indefinitely (Critical Finding 2).
 
-    Scope: only handles the plain source_path case (source_path == str(path)
-    for every top-level ingestion branch -- txt/md/csv/image, and a PDF's
-    own text chunks and OCR-image record). It deliberately does NOT handle
-    the composite per-page doc_id a scanned PDF page gets
-    (f"{doc_id}:page{N}", source_path f"{path}#page={N}", written by
-    _ingest_scanned_pdf_page) -- that is a separate, already-known,
-    out-of-scope limitation (see the matching note in
-    app/ingest/watcher.py's on_deleted handler)."""
+    Scope: only finds stale doc_ids via the plain source_path case
+    (source_path == str(path) for every top-level ingestion branch --
+    txt/md/csv/image, and a PDF's own text chunks). PDF-extracted images use
+    a composite source_path (f"{pdf_path}#img={idx}") so they aren't found
+    directly here -- but each delete_document(client, stale_doc_id) call
+    below cascades to that stale doc_id's own composite-doc_id image records
+    (f"{stale_doc_id}:img{N}") via qdrant_client._delete_related_pdf_images,
+    so they aren't left behind either."""
     for stale_doc_id in find_all_doc_ids_by_source_path(client, source_path):
         if stale_doc_id != doc_id:
             delete_document(client, stale_doc_id)

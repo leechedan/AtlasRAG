@@ -141,13 +141,13 @@ class _EventHandler(FileSystemEventHandler):
             # the delete rather than calling delete_document with a bogus doc_id.
             doc_id = find_doc_id_by_source_path(client, event.src_path)
             if doc_id is not None:
+                # delete_ingested_document -> delete_document also cascades
+                # to any PDF-extracted image records stored under the
+                # composite doc_id f"{doc_id}:img{N}" (see
+                # qdrant_client._delete_related_pdf_images), so those are not
+                # orphaned by this path-based lookup only resolving the
+                # parent PDF's plain doc_id.
                 delete_ingested_document(doc_id, client=client)
-            # Known limitation: a scanned PDF page's image record is stored
-            # under its own composite doc_id (f"{doc_id}:page{N}", source_path
-            # f"{path}#page={N}") — see pipeline._ingest_scanned_pdf_page. This
-            # lookup only resolves the plain path, so those per-page image
-            # records are not cascaded and become orphaned in the images
-            # collection when the source PDF is deleted.
 
 
 class DirectoryWatchManager:
