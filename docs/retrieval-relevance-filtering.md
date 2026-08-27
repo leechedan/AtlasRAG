@@ -195,8 +195,11 @@ retrieval-service-design.md` 第 2 节"组件划分理由"原文写的是——�
 需要像 BGE-M3/CLIP 那样在 worker 进程里也加载一份——这是 reranker 相比
 现有两个模型更轻的一点。
 
-## 尚未实施
+## 实施状态
 
-本文档仅记录讨论结论，A/B 方案均未实施，是否要做、以及"完全不相关时接
-口具体该返回什么（空列表 vs 带信号继续返回）"尚未决定，留待后续按需求
-优先级排期。
+方案 A 的排序部分（RRF 粗筛 top-N 候选池 + cross-encoder 精排，两阶段
+架构）已按 `docs/superpowers/specs/2026-08-27-two-stage-rerank-design.md`
+实施：`/search/text` 默认走两阶段 rerank（`reranker_enabled=False` 可关
+闭回退到单阶段 RRF）。方案 B（透传命中路径信号）以及"完全不相关时接口
+具体该返回什么（空列表 vs 带信号继续返回）"仍未实施/未决定，留待后续按
+需求优先级排期。
