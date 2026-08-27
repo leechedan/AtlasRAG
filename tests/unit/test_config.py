@@ -1,6 +1,13 @@
 from app.config import settings
 
 
+def test_reranker_settings_have_expected_defaults():
+    assert settings.reranker_enabled is True
+    assert settings.reranker_model_name == "BAAI/bge-reranker-v2-m3"
+    assert settings.reranker_candidate_k == 30
+    assert settings.reranker_max_concurrency == 2
+
+
 def test_mineru_settings_have_expected_defaults():
     assert settings.mineru_backend == "pipeline"
     assert settings.mineru_timeout_seconds == 600
