@@ -156,6 +156,36 @@ def _group_text(group: list[_Block], lines: list[str]) -> str:
         return content.strip()
 
 
+def _with_overlap_prefix(
+    text_piece: str, prev_group: list[_Block], prev_text: str | None, chunk_overlap: int
+) -> str:
+    """把上一个块打包组结尾的 chunk_overlap 个字符前缀到当前分片，弥补
+    "同一节内容因超过 chunk_size 被硬切"产生的分片边界断裂——两个相邻
+    分片原本共享的上下文完全丢失，检索命中其中一个时看不到另一个的内容，
+    互相之间就没有关联性了。
+
+    只在上一组的最后一个块不是受保护块（表格/代码）时借用：受保护块整体
+    不可拆，借用它结尾的字符等于截出半段表格/代码，没有意义，也违反"块
+    不可跨 chunk 拆开"的约束——遇到这种情况就不加 overlap，保持原有的
+    干净边界。
+    """
+    if chunk_overlap <= 0 or not prev_text or prev_group[-1].kind is not None:
+        return text_piece
+    overlap = prev_text[-chunk_overlap:]
+    # 字符级硬切可能从英文单词中间开始，尝试丢掉切到的第一个空白字符之前
+    # 的残缺片段，让 overlap 从一个完整词开始，避免和当前分片的首词粘连成
+    # 一个不存在的新 token（影响 sparse/关键词检索的分词）。中文没有空格
+    # 分词，找不到空白边界时直接用原始切片——从句子中间开始对中文阅读
+    # 体验的影响远小于英文单词被粘连成乱码 token。
+    boundary = next((i for i, ch in enumerate(overlap) if ch.isspace()), None)
+    if boundary is not None:
+        overlap = overlap[boundary + 1 :]
+    overlap = overlap.strip()
+    if not overlap or text_piece.startswith(overlap):
+        return text_piece
+    return overlap + "\n\n" + text_piece
+
+
 def chunk_markdown_structured(
     text: str,
     chunk_size: int | None = None,
@@ -185,6 +215,14 @@ def chunk_markdown_structured(
         if not section_blocks:
             pieces.append((section_text, False, False))
         else:
+            # prev_group/prev_text track the immediately preceding packed
+            # group so a same-section, size-driven cut (the common case: a
+            # long run of plain paragraphs split only because it exceeds
+            # chunk_size_val) can carry chunk_overlap_val characters of
+            # trailing context into the next piece -- see "为什么块打包
+            # 之间也要 overlap" in the markdown-chunker-overlap design doc.
+            prev_group: list[_Block] | None = None
+            prev_text: str | None = None
             for group in _pack_blocks(section_blocks, lines, chunk_size_val):
                 group_text = _group_text(group, lines)
                 has_table = any(b.kind == "table" for b in group)
@@ -195,12 +233,24 @@ def chunk_markdown_structured(
                     and len(group_text) > chunk_size_val
                 )
                 if oversized_plain:
-                    for sub in chunk_text(
+                    sub_chunks = chunk_text(
                         group_text, chunk_size=chunk_size_val, chunk_overlap=chunk_overlap_val
-                    ):
+                    )
+                    if sub_chunks and prev_group is not None:
+                        sub_chunks[0] = _with_overlap_prefix(
+                            sub_chunks[0], prev_group, prev_text, chunk_overlap_val
+                        )
+                    for sub in sub_chunks:
                         pieces.append((sub, False, False))
+                    prev_text = sub_chunks[-1] if sub_chunks else prev_text
                 else:
+                    if prev_group is not None:
+                        group_text = _with_overlap_prefix(
+                            group_text, prev_group, prev_text, chunk_overlap_val
+                        )
                     pieces.append((group_text, has_table, has_code))
+                    prev_text = group_text
+                prev_group = group
 
         for i, (content, has_table, has_code) in enumerate(pieces):
             path = heading_path if i == 0 else f"{heading_path} #{i + 1}"

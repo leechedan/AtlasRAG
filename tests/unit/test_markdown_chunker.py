@@ -116,14 +116,42 @@ def test_long_section_splits_into_multiple_chunks_with_numeric_suffix():
     assert section_chunks[1].heading_path == "Section #2"
 
 
-def test_long_section_split_has_no_overlap_and_no_lost_content():
+def test_long_section_split_has_overlap_and_no_lost_content():
     text = _build_long_section(20)
-    chunks = chunk_markdown_structured(text, chunk_size=100, chunk_overlap=20)
+    chunk_overlap = 20
+    chunks = chunk_markdown_structured(text, chunk_size=100, chunk_overlap=chunk_overlap)
 
+    # 每个完整段落只应该完整出现一次——overlap 只借用上一个分片结尾的
+    # 一小段字符做上下文衔接，不是把整段内容复制一遍。
     for i in range(20):
         marker = f"paragraph number {i} unique marker"
         occurrences = sum(c.content.count(marker) for c in chunks)
         assert occurrences == 1
+
+    # 但相邻分片之间应该共享一小段上下文（overlap 实际生效），而不是在
+    # chunk_size 硬切处完全断裂、互相没有关联性。
+    section_chunks = [c for c in chunks if c.heading_path.startswith("Section")]
+    assert len(section_chunks) > 1
+    for prev, nxt in zip(section_chunks, section_chunks[1:]):
+        prev_tail = prev.content[-10:].strip()
+        assert prev_tail
+        assert prev_tail in nxt.content[: chunk_overlap + len(prev_tail)]
+
+
+def test_overlap_skipped_when_previous_chunk_ends_in_protected_block():
+    # 上一个分片的最后一个块是表格：借用它结尾的字符做 overlap 等于截出
+    # 半段表格，所以这条边界应该保持干净、不加 overlap。
+    text = (
+        "## Sec\n\n"
+        "| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+        + ("next paragraph word " * 10) + "\n"
+    )
+    chunks = chunk_markdown_structured(text, chunk_size=40, chunk_overlap=15)
+
+    table_chunk = next(c for c in chunks if c.has_table)
+    following = chunks[chunks.index(table_chunk) + 1]
+    assert not following.content.startswith("|")
+    assert "|" not in following.content
 
 
 def test_table_never_split_across_two_chunks_even_in_long_section():
