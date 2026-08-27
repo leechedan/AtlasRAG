@@ -1,10 +1,12 @@
 import io
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app.api.deps import get_clip_embedder_dep, get_store_client, get_text_embedder_dep
+from app.api.deps import get_clip_embedder_dep, get_reranker_dep, get_store_client, get_text_embedder_dep
 from app.api.main import app
+from app.config import settings
 from app.models.embeddings import DenseSparseVector
 from app.store.qdrant_client import SearchHit
 
@@ -38,10 +40,19 @@ def override_list_chunks_for_document(*args, **kwargs):
     return [{"doc_id": "img1", "chunk_index": 0, "text": "关联OCR文本", "source_type": "ocr_image"}]
 
 
-def make_client(monkeypatch):
+class FakeReranker:
+    def __init__(self, scores):
+        self._scores = scores
+
+    def score(self, query, texts):
+        return self._scores
+
+
+def make_client(monkeypatch, reranker_scores=None):
     app.dependency_overrides[get_text_embedder_dep] = lambda: FakeTextEmbedder()
     app.dependency_overrides[get_clip_embedder_dep] = lambda: FakeClipEmbedder()
     app.dependency_overrides[get_store_client] = lambda: FakeStoreClient()
+    app.dependency_overrides[get_reranker_dep] = lambda: FakeReranker(reranker_scores or [0.9])
     monkeypatch.setattr("app.api.routes.search.search_text_hybrid", override_search_text_hybrid)
     monkeypatch.setattr("app.api.routes.search.search_images", override_search_images)
     monkeypatch.setattr(
@@ -104,4 +115,40 @@ def test_search_image_returns_related_text_hits(monkeypatch):
     assert body["related_text_hits"][0]["payload"]["text"] == "关联OCR文本"
     assert body["related_text_hits"][0]["doc_id"] == "img1"
     assert body["related_text_hits"][0]["chunk_index"] == 0
+    app.dependency_overrides.clear()
+
+
+def test_search_text_applies_rerank_and_reorders(monkeypatch):
+    def two_hits(*args, **kwargs):
+        return [
+            SearchHit(score=0.5, payload={"doc_id": "low", "chunk_index": 0, "text": "低相关"}),
+            SearchHit(score=0.4, payload={"doc_id": "high", "chunk_index": 0, "text": "高相关"}),
+        ]
+
+    client = make_client(monkeypatch, reranker_scores=[0.1, 0.9])
+    monkeypatch.setattr("app.api.routes.search.search_text_hybrid", two_hits)
+
+    response = client.post("/search/text", json={"query": "你好", "top_k": 5})
+    body = response.json()
+
+    assert [h["doc_id"] for h in body["text_hits"]] == ["high", "low"]
+    assert body["text_hits"][0]["score"] == pytest.approx(0.9)
+    app.dependency_overrides.clear()
+
+
+def test_search_text_skips_rerank_when_disabled(monkeypatch):
+    def two_hits(*args, **kwargs):
+        return [
+            SearchHit(score=0.5, payload={"doc_id": "low", "chunk_index": 0, "text": "低相关"}),
+            SearchHit(score=0.4, payload={"doc_id": "high", "chunk_index": 0, "text": "高相关"}),
+        ]
+
+    monkeypatch.setattr(settings, "reranker_enabled", False)
+    client = make_client(monkeypatch, reranker_scores=[0.1, 0.9])
+    monkeypatch.setattr("app.api.routes.search.search_text_hybrid", two_hits)
+
+    response = client.post("/search/text", json={"query": "你好", "top_k": 5})
+    body = response.json()
+
+    assert [h["doc_id"] for h in body["text_hits"]] == ["low", "high"]
     app.dependency_overrides.clear()

@@ -3,13 +3,15 @@ import io
 from fastapi import APIRouter, Depends, File, UploadFile
 from PIL import Image
 
-from app.api.deps import get_clip_embedder_dep, get_store_client, get_text_embedder_dep
+from app.api.deps import get_clip_embedder_dep, get_reranker_dep, get_store_client, get_text_embedder_dep
 from app.api.schemas import (
     SearchHitOut,
     SearchImageResponse,
     SearchTextRequest,
     SearchTextResponse,
 )
+from app.config import settings
+from app.retrieval.rerank import apply_rerank
 from app.store.qdrant_client import (
     compute_chunk_id,
     list_chunks_for_document,
@@ -45,13 +47,19 @@ def search_text(
     store=Depends(get_store_client),
     text_embedder=Depends(get_text_embedder_dep),
     clip_embedder=Depends(get_clip_embedder_dep),
+    reranker=Depends(get_reranker_dep),
 ):
     text_hits = []
     image_hits = []
 
     if "text" in request.modalities:
         query_vector = text_embedder.embed([request.query])[0]
-        text_hits = search_text_hybrid(store, query_vector, query_text=request.query, top_k=request.top_k)
+        pool_size = settings.reranker_candidate_k if settings.reranker_enabled else request.top_k
+        text_hits = search_text_hybrid(
+            store, query_vector, query_text=request.query, top_k=request.top_k, pool_size=pool_size
+        )
+        if settings.reranker_enabled and text_hits:
+            text_hits = apply_rerank(request.query, text_hits, reranker, top_k=request.top_k)
 
     if "image" in request.modalities:
         clip_query_vector = clip_embedder.embed_text(request.query)
