@@ -1,0 +1,32 @@
+# Dockerfile.mineru
+#
+# Separate image for the standalone `mineru-api` service. Kept apart from
+# the main Dockerfile because mineru[pipeline] requires transformers>=4.57.3,
+# which conflicts with FlagEmbedding==1.3.4 (used by api/worker for BGE-M3)
+# at import time -- FlagEmbedding's reranker eagerly imports
+# GEMMA2_START_DOCSTRING, a constant transformers dropped in that range.
+# Since api/worker only talk to MinerU over HTTP now, they don't need the
+# mineru pip package at all, so the two dependency sets are split instead
+# of forced into lockstep.
+FROM python:3.12-slim
+
+WORKDIR /srv
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 用阿里云 PyPI 镜像加速依赖下载。
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+
+# torch install is its own layer, cached independently of requirements-mineru.txt.
+RUN pip install --no-cache-dir torch \
+    --index-url https://download.pytorch.org/whl/cu130 \
+    --extra-index-url https://mirrors.aliyun.com/pypi/simple/
+
+COPY requirements-mineru.txt .
+RUN pip install --no-cache-dir -r requirements-mineru.txt
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]

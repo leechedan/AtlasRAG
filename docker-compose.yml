@@ -24,6 +24,40 @@ services:
       - ./data/redis:/data
     restart: unless-stopped
 
+  mineru:
+    build:
+      context: .
+      dockerfile: Dockerfile.mineru
+    command: mineru-api --host 0.0.0.0 --port 8000
+    ports:
+      - "8100:8000"
+    environment:
+      # Same HuggingFace cache bind-mount as api/worker, so MinerU's
+      # pipeline-backend models are picked up from the host cache instead
+      # of re-downloading inside the container.
+      HF_HOME: /hf_cache
+      # HF_HOME only sets the cache location -- from_pretrained() still
+      # does a network etag check against huggingface.co on every startup
+      # unless offline mode is forced, even with a fully populated cache.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - ${HOME}/.cache/huggingface:/hf_cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request as u,sys; sys.exit(0 if u.urlopen('http://localhost:8000/health',timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   api:
     build:
       context: .
@@ -36,12 +70,18 @@ services:
       QDRANT_PORT: 6333
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /srv/data
+      MINERU_API_URL: http://mineru:8000
       # Bind-mounted straight to this host's real HuggingFace cache
       # (~/.cache/huggingface) instead of an empty project-local dir, so
       # BGE-M3/Chinese-CLIP -- already downloaded there from earlier
       # bare-metal GPU testing on this machine -- are picked up immediately
       # instead of re-downloading from scratch inside the container.
       HF_HOME: /hf_cache
+      # HF_HOME only sets the cache location -- from_pretrained() still
+      # does a network etag check against huggingface.co on every startup
+      # unless offline mode is forced, even with a fully populated cache.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./data:/srv/data
@@ -49,6 +89,7 @@ services:
     depends_on:
       - qdrant
       - redis
+      - mineru
     deploy:
       resources:
         reservations:
@@ -85,12 +126,18 @@ services:
       QDRANT_PORT: 6333
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /srv/data
+      MINERU_API_URL: http://mineru:8000
       # Bind-mounted straight to this host's real HuggingFace cache
       # (~/.cache/huggingface) instead of an empty project-local dir, so
       # BGE-M3/Chinese-CLIP -- already downloaded there from earlier
       # bare-metal GPU testing on this machine -- are picked up immediately
       # instead of re-downloading from scratch inside the container.
       HF_HOME: /hf_cache
+      # HF_HOME only sets the cache location -- from_pretrained() still
+      # does a network etag check against huggingface.co on every startup
+      # unless offline mode is forced, even with a fully populated cache.
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./data:/srv/data
@@ -98,6 +145,7 @@ services:
     depends_on:
       - qdrant
       - redis
+      - mineru
     deploy:
       resources:
         reservations:

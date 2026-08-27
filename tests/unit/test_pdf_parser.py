@@ -1,65 +1,108 @@
-import subprocess
-from pathlib import Path
-from unittest.mock import patch
+import base64
+from io import BytesIO
 
+import httpx
 import pytest
+import respx
 from PIL import Image
 
+from app.config import settings
 from app.ingest.parsers.pdf_parser import parse_pdf_to_markdown
 
 
-def _completed(returncode, stderr=""):
-    return subprocess.CompletedProcess(args=["mineru"], returncode=returncode, stdout="", stderr=stderr)
+def _image_data_uri(color: str, size: tuple[int, int]) -> str:
+    buf = BytesIO()
+    Image.new("RGB", size, color=color).save(buf, format="JPEG")
+    encoded = base64.b64encode(buf.getvalue()).decode()
+    return f"data:image/jpeg;base64,{encoded}"
 
 
-@patch("app.ingest.parsers.pdf_parser.subprocess.run")
-@patch("app.ingest.parsers.pdf_parser.tempfile.mkdtemp")
-def test_parse_pdf_to_markdown_returns_text_and_images(mock_mkdtemp, mock_run, tmp_path):
-    out_dir = tmp_path / "out"
-    nested = out_dir / "doc" / "auto"
-    nested.mkdir(parents=True)
-    (nested / "doc.md").write_text("# 标题\n\n正文 ![图](images/a.jpg)。", encoding="utf-8")
-    images_dir = nested / "images"
-    images_dir.mkdir()
-    Image.new("RGB", (5, 5), color="red").save(images_dir / "a.jpg")
-    Image.new("RGB", (6, 6), color="blue").save(images_dir / "b.jpg")
+@respx.mock
+def test_parse_pdf_to_markdown_returns_text_and_images(tmp_path):
+    pdf_path = tmp_path / "input.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
 
-    mock_mkdtemp.return_value = str(out_dir)
-    mock_run.return_value = _completed(0)
+    respx.post(f"{settings.mineru_api_url}/file_parse").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "backend": "pipeline",
+                "version": "3.4.5",
+                "results": {
+                    "input": {
+                        "md_content": "# 标题\n\n正文 ![图](images/a.jpg)。",
+                        "images": {
+                            "a.jpg": _image_data_uri("red", (5, 5)),
+                            "b.jpg": _image_data_uri("blue", (6, 6)),
+                        },
+                    }
+                },
+            },
+        )
+    )
 
-    result = parse_pdf_to_markdown(Path("/fake/input.pdf"))
+    result = parse_pdf_to_markdown(pdf_path)
 
     assert "标题" in result.markdown_text
     assert [img.filename for img in result.images] == ["a.jpg", "b.jpg"]
     assert result.images[0].image.size == (5, 5)
     assert result.images[1].image.size == (6, 6)
-    # 处理完必须清理临时目录，不能把 MinerU 的中间产物留在磁盘上。
-    assert not out_dir.exists()
 
 
-@patch("app.ingest.parsers.pdf_parser.subprocess.run")
-@patch("app.ingest.parsers.pdf_parser.tempfile.mkdtemp")
-def test_parse_pdf_to_markdown_raises_on_nonzero_exit(mock_mkdtemp, mock_run, tmp_path):
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    mock_mkdtemp.return_value = str(out_dir)
-    mock_run.return_value = _completed(1, stderr="model weights missing")
+@respx.mock
+def test_parse_pdf_to_markdown_strips_sub_sup_tags(tmp_path):
+    pdf_path = tmp_path / "input.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+    respx.post(f"{settings.mineru_api_url}/file_parse").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "backend": "pipeline",
+                "version": "3.4.5",
+                "results": {
+                    "input": {
+                        "md_content": "分子式 H<sub>2</sub>O，注释<sup class=\"ref\">1</sup>。",
+                        "images": {},
+                    }
+                },
+            },
+        )
+    )
+
+    result = parse_pdf_to_markdown(pdf_path)
+
+    assert result.markdown_text == "分子式 H2O，注释1。"
+
+
+@respx.mock
+def test_parse_pdf_to_markdown_raises_on_non_200(tmp_path):
+    pdf_path = tmp_path / "input.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+    respx.post(f"{settings.mineru_api_url}/file_parse").mock(
+        return_value=httpx.Response(409, text="model weights missing")
+    )
 
     with pytest.raises(RuntimeError, match="model weights missing"):
-        parse_pdf_to_markdown(Path("/fake/input.pdf"))
-
-    assert not out_dir.exists()
+        parse_pdf_to_markdown(pdf_path)
 
 
-@patch("app.ingest.parsers.pdf_parser.subprocess.run")
-@patch("app.ingest.parsers.pdf_parser.tempfile.mkdtemp")
-def test_parse_pdf_to_markdown_raises_when_no_markdown_produced(mock_mkdtemp, mock_run, tmp_path):
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    mock_mkdtemp.return_value = str(out_dir)
-    mock_run.return_value = _completed(0)
+@respx.mock
+def test_parse_pdf_to_markdown_raises_when_no_markdown_produced(tmp_path):
+    pdf_path = tmp_path / "input.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 fake")
+
+    respx.post(f"{settings.mineru_api_url}/file_parse").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "backend": "pipeline",
+                "version": "3.4.5",
+                "results": {"input": {"md_content": "", "images": {}}},
+            },
+        )
+    )
 
     with pytest.raises(RuntimeError, match="no markdown output"):
-        parse_pdf_to_markdown(Path("/fake/input.pdf"))
-
-    assert not out_dir.exists()
+        parse_pdf_to_markdown(pdf_path)

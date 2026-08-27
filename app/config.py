@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     clip_model_name: str = "OFA-Sys/chinese-clip-vit-base-patch16"
     ocr_lang: str = "ch"
     mineru_backend: str = "pipeline"
+    mineru_api_url: str = "http://mineru:8000"
     mineru_timeout_seconds: int = 600
     watch_reconcile_interval_seconds: int = 3600
     allowed_index_roots: list[Path] = []
