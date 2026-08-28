@@ -53,6 +53,16 @@ class _Piece:
     content: str
     has_table: bool
     has_code: bool
+    # 该 piece 在原文里对应的行区间 [标题行, 正文结束行)，只有"整节恰好
+    # 产出这一个 piece"时才填。为 None 表示这个 piece 是 section 被
+    # chunk_size 拆开（或注入过 overlap 前缀）的产物，不对应一段完整的原
+    # 文行区间，因此不能参与跨 section 合并。见
+    # `_merge_small_pieces_across_sections`。
+    line_span: tuple[int, int] | None = None
+    # 正文起始行（跳过标题行本身）。合并时如果这一节的路径正好就是合并
+    # 结果的 heading_path，就从这里而不是标题行开始切，免得同一个标题既
+    # 出现在 heading_path 里又重复出现在正文开头。
+    content_start_line: int | None = None
 
 
 def _heading_text(tokens: list, idx: int) -> str:
@@ -89,28 +99,34 @@ def _top_level_blocks(tokens: list) -> list[_Block]:
     return blocks
 
 
-def _build_sections(lines: list[str], tokens: list) -> list[tuple[str, int, int]]:
-    """返回 [(heading_path, content_start_line, content_end_line), ...]，
-    end 不含。没有标题时返回单个 (NO_HEADING_PLACEHOLDER, 0, len(lines))。"""
+def _build_sections(lines: list[str], tokens: list) -> list[tuple[str, int, int, int]]:
+    """返回 [(heading_path, heading_start_line, content_start_line,
+    content_end_line), ...]，end 不含。没有标题时返回单个
+    (NO_HEADING_PLACEHOLDER, 0, 0, len(lines))。
+
+    heading_start_line 是标题自身所在的行，正常切片时用不到（标题文本走
+    heading_path 元数据，不进正文）；只有跨 section 合并按原文行区间重新
+    切片时需要它，好让被合并进来的各节标题留在正文里，
+    见 `_merge_small_pieces_across_sections`。"""
     headings = _headings(tokens)
     n_lines = len(lines)
 
     if not headings:
-        return [(NO_HEADING_PLACEHOLDER, 0, n_lines)]
+        return [(NO_HEADING_PLACEHOLDER, 0, 0, n_lines)]
 
-    sections: list[tuple[str, int, int]] = []
+    sections: list[tuple[str, int, int, int]] = []
     _, _, first_heading_start, _ = headings[0]
     if first_heading_start > 0:
-        sections.append((NO_HEADING_PLACEHOLDER, 0, first_heading_start))
+        sections.append((NO_HEADING_PLACEHOLDER, 0, 0, first_heading_start))
 
     stack: list[tuple[int, str]] = []
-    for i, (level, htext, _start, content_start) in enumerate(headings):
+    for i, (level, htext, start, content_start) in enumerate(headings):
         while stack and stack[-1][0] >= level:
             stack.pop()
         stack.append((level, htext))
         heading_path = " > ".join(t for _, t in stack)
         content_end = headings[i + 1][2] if i + 1 < len(headings) else n_lines
-        sections.append((heading_path, content_start, content_end))
+        sections.append((heading_path, start, content_start, content_end))
 
     return sections
 
@@ -185,23 +201,90 @@ def _merge_small_groups(
     return result
 
 
+def _common_heading_path(a: str, b: str) -> str:
+    """两条面包屑路径的最长公共前缀，也就是同时包含两者内容的最深标题。
+    没有公共祖先时返回空串。"""
+    common: list[str] = []
+    for x, y in zip(a.split(" > "), b.split(" > ")):
+        if x != y:
+            break
+        common.append(x)
+    return " > ".join(common)
+
+
+def _merge_two_pieces(earlier: _Piece, later: _Piece, lines: list[str]) -> _Piece:
+    """按原文行区间把两个相邻 piece 重新切成一片。
+
+    关键是**重新切片**而不是把两段已定稿的 content 字符串拼起来：两个
+    section 的正文之间隔着标题行（可能还隔着若干个没有正文、因此没产出
+    piece 的空标题节），字符串拼接的结果在原文里根本找不到连续匹配，会
+    破坏本模块"内容是原文逐字提取"的承诺，也会让
+    `app/eval/structure_metrics.locate_chunk_spans` 的 `text.find(chunk)`
+    定位失败、退化成猜测区间，进而把完好的表格/代码块误报成被截断。
+    取 `lines[较早节的标题行 : 较晚节的正文结束行]` 就仍然是原文的一段连
+    续切片，中间被跨过的标题行也自然留在正文里。"""
+    merged_path = _common_heading_path(earlier.heading_path, later.heading_path)
+    # 合并结果的面包屑就是较早这一节自己的路径时（父节的正文并入了子节），
+    # 它的标题已经由 heading_path 表达了，正文就从标题行之后开始，不重复。
+    # 其余情况从标题行开始切，让这一节的标题作为原文的一部分留在正文里
+    # ——否则它既不在 heading_path（那是更浅的公共祖先）里，也不在正文里，
+    # 就彻底丢了。
+    if merged_path == earlier.heading_path and earlier.content_start_line is not None:
+        start = earlier.content_start_line
+    else:
+        start = earlier.line_span[0]
+    end = later.line_span[1]
+    has_table = earlier.has_table or later.has_table
+    has_code = earlier.has_code or later.has_code
+    content = "".join(lines[start:end])
+    # 和 `_group_text` 同样的理由：含受保护块时只 lstrip，保留末尾换行，
+    # 免得被 `detect_structure_violations` 误判为截断。
+    content = content.lstrip() if (has_table or has_code) else content.strip()
+    return _Piece(
+        heading_path=merged_path,
+        content=content,
+        has_table=has_table,
+        has_code=has_code,
+        line_span=(start, end),
+        # 合并结果的起点已经定了，级联再合并时不能再往回挪：两个分支都取
+        # 到同一个 start，而不是继承较早那一节的正文起点（那会把它的标题
+        # 行又切掉）。
+        content_start_line=start,
+    )
+
+
+def _can_merge(earlier: _Piece, later: _Piece, lines: list[str], chunk_size: int) -> bool:
+    if earlier.line_span is None or later.line_span is None:
+        return False
+    if not _common_heading_path(earlier.heading_path, later.heading_path):
+        return False
+    return len(_merge_two_pieces(earlier, later, lines).content) <= chunk_size
+
+
 def _merge_small_pieces_across_sections(
-    pieces: list[_Piece], chunk_size: int, min_chars: int
+    pieces: list[_Piece], lines: list[str], chunk_size: int, min_chars: int
 ) -> list[_Piece]:
-    """章节内合并（`_merge_small_groups`）只能消除“一个 section 内有多个
-    小块”的碎片化，消除不了真实语料里更常见的模式——很多小标题、每个
-    section 天生就只有一小段正文，section 内根本没有相邻小块可合并。这一
-    轮在整个文档的最终 piece 序列（章节内合并/overlap 注入都已完成）上再
-    扫一遍，允许把小 piece 并入相邻 section 的 piece。
+    """章节内合并（`_merge_small_groups`）只能消除"一个 section 内有多个
+    小块"的碎片化，消除不了真实语料里占主导的模式——标题多、每个 section
+    天生就只有一小段正文，section 内根本没有相邻小块可合并。这一轮在整个
+    文档的最终 piece 序列上再扫一遍，把小 piece 并入相邻 section。
 
-    合并后的 heading_path 取时间上更早（在文档中出现在前面）的那个 piece
-    的 heading_path，不拼接多个标题——按用户要求，合并到哪个 section 就
-    显示那个 section 的路径。
+    三条约束，缺一不可：
 
-    不会重复触发 overlap 相关的问题：overlap 只在同一个 section 内部注入
-    过一次（`prev_group`/`prev_text` 每个 section 开始时都会重置），这里
-    只是把不同 section 已经定稿的 piece 文本首尾拼接，不涉及再次借用任何
-    一方结尾的字符。"""
+    1. 两边都必须是"整节恰好产出一个 piece"（`line_span` 不为 None）。被
+       chunk_size 拆开的 piece 不对应完整的原文行区间，没法重新切片。
+    2. 合并后的 `heading_path` 取两条路径的最长公共前缀——那是唯一真正
+       包含全部合并内容的标题。取"更早那个 piece 的路径"是错的：它只覆
+       盖合并内容的前一部分，对后面几节就是指错地方的面包屑。
+    3. 公共前缀为空（两节分属不同顶层章节）时**拒绝合并**：既找不到能覆
+       盖全部内容的 heading_path，跨顶层章节本身也是语义边界。
+
+    被跨过的各节标题不会丢失——它们作为原文行留在合并后的正文里（见
+    `_merge_two_pieces`）。
+
+    不会重复注入 overlap：overlap 只在同一个 section 内部注入过一次
+    （`prev_group`/`prev_text` 每个 section 开始时都重置），而这里参与合
+    并的 piece 按约束 1 都是没被注入过 overlap 的整节 piece。"""
     result = list(pieces)
     i = 0
     while i < len(result):
@@ -209,29 +292,13 @@ def _merge_small_pieces_across_sections(
             i += 1
             continue
 
-        if i + 1 < len(result) and (
-            len(result[i].content) + len(result[i + 1].content) <= chunk_size
-        ):
-            earlier, later = result[i], result[i + 1]
-            result[i] = _Piece(
-                heading_path=earlier.heading_path,
-                content=earlier.content + "\n\n" + later.content,
-                has_table=earlier.has_table or later.has_table,
-                has_code=earlier.has_code or later.has_code,
-            )
+        if i + 1 < len(result) and _can_merge(result[i], result[i + 1], lines, chunk_size):
+            result[i] = _merge_two_pieces(result[i], result[i + 1], lines)
             del result[i + 1]
             continue
 
-        if i > 0 and (
-            len(result[i - 1].content) + len(result[i].content) <= chunk_size
-        ):
-            earlier, later = result[i - 1], result[i]
-            result[i - 1] = _Piece(
-                heading_path=earlier.heading_path,
-                content=earlier.content + "\n\n" + later.content,
-                has_table=earlier.has_table or later.has_table,
-                has_code=earlier.has_code or later.has_code,
-            )
+        if i > 0 and _can_merge(result[i - 1], result[i], lines, chunk_size):
+            result[i - 1] = _merge_two_pieces(result[i - 1], result[i], lines)
             del result[i]
             i -= 1
             continue
@@ -315,7 +382,7 @@ def chunk_markdown_structured(
 
     all_pieces: list[_Piece] = []
 
-    for heading_path, start_line, end_line in sections:
+    for heading_path, heading_line, start_line, end_line in sections:
         section_text = "".join(lines[start_line:end_line]).strip()
         if not section_text:
             continue
@@ -365,18 +432,35 @@ def chunk_markdown_structured(
                     prev_text = group_text
                 prev_group = group
 
-        for i, (content, has_table, has_code) in enumerate(pieces):
-            path = heading_path if i == 0 else f"{heading_path} #{i + 1}"
-            all_pieces.append(_Piece(path, content, has_table, has_code))
+        # 只有整节恰好产出一个 piece 时，这个 piece 才对应一段完整的原文
+        # 行区间（也才没被注入过 overlap 前缀），能参与按行区间重新切片的
+        # 跨 section 合并。区间从标题行开始，这样合并时各节标题会留在正文里。
+        span = (heading_line, end_line) if len(pieces) == 1 else None
+        body_start = start_line if len(pieces) == 1 else None
+        for content, has_table, has_code in pieces:
+            all_pieces.append(
+                _Piece(heading_path, content, has_table, has_code, span, body_start)
+            )
 
-    all_pieces = _merge_small_pieces_across_sections(all_pieces, chunk_size_val, min_chars_val)
+    all_pieces = _merge_small_pieces_across_sections(
+        all_pieces, lines, chunk_size_val, min_chars_val
+    )
+
+    # 重名的面包屑统一在这里编号，一条规则覆盖两种重名来源：同一节被
+    # chunk_size 拆成多片，以及多个合并结果的面包屑都退到了同一个公共祖
+    # 先。对前者产生的编号和分节时逐片编号的老写法完全一致（同一节的多片
+    # 在列表里相邻且同名）。
+    seen: dict[str, int] = {}
 
     chunks: list[StructuredChunk] = []
     for piece in all_pieces:
+        seen[piece.heading_path] = seen.get(piece.heading_path, 0) + 1
+        occurrence = seen[piece.heading_path]
+        path = piece.heading_path if occurrence == 1 else f"{piece.heading_path} #{occurrence}"
         chunks.append(
             StructuredChunk(
                 chunk_id=len(chunks),
-                heading_path=piece.heading_path,
+                heading_path=path,
                 has_table=piece.has_table,
                 has_code_block=piece.has_code,
                 char_count=len(piece.content),

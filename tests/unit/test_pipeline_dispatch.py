@@ -144,13 +144,18 @@ def test_ingest_md_file_uses_structured_chunker_with_heading_metadata(mock_get_e
     real ingestion path: a .md file with two H2 sections must be split by
     heading (not by the old char-level chunker's arbitrary 1000-char
     windows), and each stored chunk must carry heading_path/has_table/
-    has_code_block instead of leaving them at their defaults."""
+    has_code_block instead of leaving them at their defaults.
+
+    两节正文都写得比 settings.chunk_min_chars 长：这个用例测的是"按标题
+    切分 + 每片带 heading 元数据"的接线，正文太短的话会被跨 section 小片
+    合并成一片，测不到分节。合并本身另有专门用例覆盖。"""
     f = tmp_path / "doc.md"
     f.write_text(
         "# 标题\n\n"
         "## 一、简介\n\n"
-        "这是简介内容。\n\n"
+        + ("这是简介内容。" * 40) + "\n\n"
         "## 二、数据表\n\n"
+        + ("以下是本节的数据表。" * 30) + "\n\n"
         "| a | b |\n|---|---|\n| 1 | 2 |\n",
         encoding="utf-8",
     )

@@ -36,34 +36,53 @@ def test_leading_text_before_first_heading_becomes_placeholder_chunk():
     assert chunks[0].content == "leading text before any heading"
 
 
+# HIERARCHY_MD 每一节都远小于默认 chunk_min_chars，默认配置下会被跨
+# section 合并掉。下面这几个用例针对的是标题层级/面包屑本身，用
+# min_chars=0 关掉合并来隔离被测行为；默认配置下的合并结果另见
+# test_hierarchy_doc_merges_into_common_ancestor_chunks_by_default。
 def test_heading_own_content_uses_heading_text_as_path():
-    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    chunks = chunk_markdown_structured(HIERARCHY_MD, min_chars=0)
     by_path = {c.heading_path: c for c in chunks}
     assert by_path["Title"].content == "intro under title"
 
 
 def test_breadcrumb_joins_ancestor_headings_with_arrow():
-    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    chunks = chunk_markdown_structured(HIERARCHY_MD, min_chars=0)
     by_path = {c.heading_path: c for c in chunks}
     assert by_path["Title > Section A"].content == "content of A"
     assert by_path["Title > Section A > Sub A1"].content == "content of sub a1"
 
 
 def test_sibling_heading_replaces_previous_sibling_in_breadcrumb():
-    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    chunks = chunk_markdown_structured(HIERARCHY_MD, min_chars=0)
     paths = [c.heading_path for c in chunks]
     assert "Title > Section B" in paths
     assert "Title > Section A > Section B" not in paths
 
 
 def test_table_and_code_block_flags_set_and_content_preserved_verbatim():
-    chunks = chunk_markdown_structured(HIERARCHY_MD)
+    chunks = chunk_markdown_structured(HIERARCHY_MD, min_chars=0)
     by_path = {c.heading_path: c for c in chunks}
     section_b = by_path["Title > Section B"]
     assert section_b.has_table is True
     assert section_b.has_code_block is True
     assert "| a | b |" in section_b.content
     assert "```python" in section_b.content
+
+
+def test_hierarchy_doc_merges_into_common_ancestor_chunks_by_default():
+    # 默认配置下 Title 及其所有子节都远小于 chunk_min_chars，合并成一片，
+    # 面包屑退到共同祖先 Title；开头那段无标题正文和 Title 没有共同祖先，
+    # 保持独立。各级子标题作为原文行留在正文里，没有丢失。
+    chunks = chunk_markdown_structured(HIERARCHY_MD)
+
+    assert [c.heading_path for c in chunks] == [NO_HEADING_PLACEHOLDER, "Title"]
+    merged = chunks[1]
+    assert merged.content in HIERARCHY_MD
+    for heading in ("## Section A", "### Sub A1", "## Section B"):
+        assert heading in merged.content
+    assert merged.has_table is True
+    assert merged.has_code_block is True
 
 
 def test_char_count_and_token_estimate_match_content():
@@ -259,6 +278,116 @@ def test_lone_small_piece_in_section_stays_unmerged_across_section_boundary():
     assert paths == ["A", "B"]
     assert chunks[0].content == "tiny"
     assert chunks[1].content == "also tiny"
+
+
+# 真实语料的主导碎片化模式：标题多、每节天生只有一小段正文，section 内
+# 没有相邻小块可合并（实测见 docs 里的小片合并设计文档）。跨 section 合并
+# 针对的就是这种文档。
+CHARTER_MD = (
+    "# 公司章程\n"
+    "\n"
+    "## 第一章 总则\n"
+    "\n"
+    "### 第一条\n"
+    "\n"
+    "公司名称为示例科技有限公司。\n"
+    "\n"
+    "### 第二条\n"
+    "\n"
+    "公司住所为广东省广州市天河区。\n"
+    "\n"
+    "### 第三条\n"
+    "\n"
+    "公司经营范围以登记机关核准的内容为准。\n"
+)
+
+
+def test_adjacent_small_sections_merge_into_verbatim_slice_of_source():
+    # 合并结果必须仍然是原文的一段连续切片——本模块承诺"内容是原文逐字
+    # 提取"，下游 app/eval 的 locate_chunk_spans 也靠 text.find(chunk) 定位
+    # chunk 才能判断表格/代码块有没有被切断。
+    chunks = chunk_markdown_structured(CHARTER_MD, chunk_size=1000, chunk_overlap=0, min_chars=200)
+
+    assert len(chunks) == 1
+    assert chunks[0].content in CHARTER_MD
+
+
+def test_cross_section_merge_keeps_every_merged_heading_in_content():
+    # 合并跨越了多个标题，被跨过的标题行必须留在正文里，否则这些标题文本
+    # 在 heading_path（取公共祖先）和 content 里都不存在，信息直接丢失。
+    chunks = chunk_markdown_structured(CHARTER_MD, chunk_size=1000, chunk_overlap=0, min_chars=200)
+
+    content = chunks[0].content
+    assert "### 第一条" in content
+    assert "### 第二条" in content
+    assert "### 第三条" in content
+
+
+def test_cross_section_merge_uses_common_ancestor_as_heading_path():
+    # 不能取"更早那个 piece"的 heading_path——那条路径只覆盖合并内容的
+    # 前一部分，对后面几节是错的面包屑。取最长公共前缀才是真正包含全部
+    # 合并内容的标题。
+    chunks = chunk_markdown_structured(CHARTER_MD, chunk_size=1000, chunk_overlap=0, min_chars=200)
+
+    assert chunks[0].heading_path == "公司章程 > 第一章 总则"
+
+
+def test_cross_section_merge_refused_when_sections_share_no_ancestor_heading():
+    # 两个顶层章节之间没有共同祖先标题，合并出来的 chunk 找不到一个能覆盖
+    # 全部内容的 heading_path，而且跨顶层章节本身就是语义边界，不该合并。
+    text = "# 第一章\n\n很短的正文\n\n# 第二章\n\n也很短的正文\n"
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0, min_chars=500)
+
+    assert [c.heading_path for c in chunks] == ["第一章", "第二章"]
+
+
+def test_cross_section_merge_refused_when_result_exceeds_chunk_size():
+    text = (
+        "# Doc\n\n"
+        "## A\n\n" + ("word " * 20) + "\n\n"
+        "## B\n\n" + ("word " * 20) + "\n"
+    )
+    chunks = chunk_markdown_structured(text, chunk_size=120, chunk_overlap=0, min_chars=1000)
+
+    assert len(chunks) > 1
+    assert all(c.char_count <= 120 for c in chunks)
+
+
+def test_split_section_pieces_do_not_participate_in_cross_section_merge():
+    # 被 chunk_size 拆开的 section，它的每个 piece 都不对应一段完整的原文
+    # 行区间（还可能被注入过 overlap 前缀），没法按行区间重新切片，所以
+    # 不参与跨 section 合并。
+    text = "# Doc\n\n## Long\n\n" + ("x" * 3000) + "\n\n## Tiny\n\ntiny body\n"
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0, min_chars=200)
+
+    tiny = [c for c in chunks if c.content == "tiny body"]
+    assert len(tiny) == 1
+    assert tiny[0].heading_path == "Doc > Tiny"
+
+
+def test_repeated_heading_path_after_merging_gets_numeric_suffix():
+    # 合并后多个 chunk 的面包屑可能都退到同一个公共祖先，变成重名。沿用
+    # section 内拆分时就在用的 #n 约定把它们区分开。
+    text = (
+        "# R\n\n"
+        "r 的正文\n\n"
+        "## A\n\n" + ("a" * 30) + "\n\n"
+        "## B\n\n" + ("b" * 350) + "\n\n"
+        "## C\n\n" + ("c" * 30) + "\n\n"
+        "## D\n\n" + ("d" * 30) + "\n"
+    )
+    chunks = chunk_markdown_structured(text, chunk_size=400, chunk_overlap=0, min_chars=200)
+
+    assert [c.heading_path for c in chunks] == ["R", "R > B", "R #2"]
+
+
+def test_every_chunk_of_real_doc_is_a_verbatim_substring_of_the_source():
+    text = REAL_DOC.read_text(encoding="utf-8")
+
+    chunks = chunk_markdown_structured(text, chunk_overlap=0)
+
+    not_found = [c.heading_path for c in chunks if c.content not in text]
+    assert not_found == []
 
 
 def test_structured_chunks_never_truncate_protected_regions_per_eval_metrics():
