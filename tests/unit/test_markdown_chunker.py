@@ -215,6 +215,52 @@ def test_single_oversized_plain_paragraph_falls_back_to_char_level_split():
     assert sum(c.content.count("x") for c in chunks) == 3000
 
 
+def test_small_group_merges_into_neighbor_within_same_section():
+    text = (
+        "## Sec\n\n"
+        "---\n\n"
+        + ("word " * 30) + "\n"
+    )
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0, min_chars=50)
+
+    section_chunks = [c for c in chunks if c.heading_path.startswith("Sec")]
+    assert len(section_chunks) == 1
+    assert "---" in section_chunks[0].content
+    assert "word" in section_chunks[0].content
+
+
+def test_cascading_merge_of_several_small_groups():
+    # 三个用 hr 分隔的短列表项，单独打包都会 < min_chars，级联合并成更少
+    # 的 chunk，但每个仍然不超过 chunk_size。
+    text = "## Sec\n\n" + "\n\n---\n\n".join(f"- item {i}" for i in range(6)) + "\n"
+    chunks = chunk_markdown_structured(text, chunk_size=60, chunk_overlap=0, min_chars=40)
+
+    section_chunks = [c for c in chunks if c.heading_path.startswith("Sec")]
+    assert len(section_chunks) < 6
+    assert all(c.char_count <= 60 for c in section_chunks)
+    for i in range(6):
+        assert sum(c.content.count(f"item {i}") for c in section_chunks) == 1
+
+
+def test_merge_refuses_to_exceed_chunk_size():
+    text = "## Sec\n\n---\n\n" + ("word " * 40) + "\n"
+    chunks = chunk_markdown_structured(text, chunk_size=30, chunk_overlap=0, min_chars=1000)
+
+    section_chunks = [c for c in chunks if c.heading_path.startswith("Sec")]
+    assert len(section_chunks) > 1
+    assert all(c.char_count <= 30 for c in section_chunks)
+
+
+def test_lone_small_piece_in_section_stays_unmerged_across_section_boundary():
+    text = "## A\n\ntiny\n\n## B\n\nalso tiny\n"
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0, min_chars=500)
+
+    paths = [c.heading_path for c in chunks]
+    assert paths == ["A", "B"]
+    assert chunks[0].content == "tiny"
+    assert chunks[1].content == "also tiny"
+
+
 def test_structured_chunks_never_truncate_protected_regions_per_eval_metrics():
     chunks = chunk_markdown_structured(HIERARCHY_MD, chunk_size=1000, chunk_overlap=0)
     report = detect_structure_violations(

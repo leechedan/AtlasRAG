@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     chunk_size: int = 1000
     chunk_overlap: int = 150
+    chunk_min_chars: int = 200
     chunk_separators: list[str] = ["\n\n", "\n", "。", "！", "？", ". ", " ", ""]
     text_embed_model: str = "BAAI/bge-m3"
     clip_model_name: str = "OFA-Sys/chinese-clip-vit-base-patch16"

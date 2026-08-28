@@ -47,6 +47,14 @@ class _Block:
     kind: str | None  # "table" | "code" | None
 
 
+@dataclass
+class _Piece:
+    heading_path: str
+    content: str
+    has_table: bool
+    has_code: bool
+
+
 def _heading_text(tokens: list, idx: int) -> str:
     if idx + 1 < len(tokens) and tokens[idx + 1].type == "inline":
         return tokens[idx + 1].content.strip()
@@ -132,6 +140,107 @@ def _pack_blocks(blocks: list[_Block], lines: list[str], chunk_size: int) -> lis
     return groups
 
 
+def _group_len(group: list[_Block], lines: list[str]) -> int:
+    return sum(len(lines[i]) for i in range(group[0].start_line, group[-1].end_line))
+
+
+def _merge_small_groups(
+    groups: list[list[_Block]], lines: list[str], chunk_size: int, min_chars: int
+) -> list[list[_Block]]:
+    """把 section 内偏小的 block-group 并入相邻 group，减少过短分片。
+
+    只在 group（block 列表）这一层合并，发生在 `_group_text`/
+    `_with_overlap_prefix` 之前：如果改成在已经注入过 overlap 前缀的最终
+    文本上做字符串拼接合并，会把上一个 group 借给下一个 group 的 overlap
+    片段重复拼进去，产生不易察觉的文本重复。在这一层合并，overlap 注入
+    照常在合并之后的最终 group 序列上只发生一次。
+
+    优先并入下一个 group，行不通（没有下一个，或者合并后会超过
+    chunk_size）就尝试并入上一个；两个方向都不行就保留原样——不跨
+    section、不无视 chunk_size 上限地生造超大 chunk。"""
+    result = list(groups)
+    i = 0
+    while i < len(result):
+        if len(result) == 1 or _group_len(result[i], lines) >= min_chars:
+            i += 1
+            continue
+
+        if i + 1 < len(result) and (
+            _group_len(result[i], lines) + _group_len(result[i + 1], lines) <= chunk_size
+        ):
+            result[i] = result[i] + result[i + 1]
+            del result[i + 1]
+            continue
+
+        if i > 0 and (
+            _group_len(result[i - 1], lines) + _group_len(result[i], lines) <= chunk_size
+        ):
+            result[i - 1] = result[i - 1] + result[i]
+            del result[i]
+            i -= 1
+            continue
+
+        i += 1
+
+    return result
+
+
+def _merge_small_pieces_across_sections(
+    pieces: list[_Piece], chunk_size: int, min_chars: int
+) -> list[_Piece]:
+    """章节内合并（`_merge_small_groups`）只能消除“一个 section 内有多个
+    小块”的碎片化，消除不了真实语料里更常见的模式——很多小标题、每个
+    section 天生就只有一小段正文，section 内根本没有相邻小块可合并。这一
+    轮在整个文档的最终 piece 序列（章节内合并/overlap 注入都已完成）上再
+    扫一遍，允许把小 piece 并入相邻 section 的 piece。
+
+    合并后的 heading_path 取时间上更早（在文档中出现在前面）的那个 piece
+    的 heading_path，不拼接多个标题——按用户要求，合并到哪个 section 就
+    显示那个 section 的路径。
+
+    不会重复触发 overlap 相关的问题：overlap 只在同一个 section 内部注入
+    过一次（`prev_group`/`prev_text` 每个 section 开始时都会重置），这里
+    只是把不同 section 已经定稿的 piece 文本首尾拼接，不涉及再次借用任何
+    一方结尾的字符。"""
+    result = list(pieces)
+    i = 0
+    while i < len(result):
+        if len(result) == 1 or len(result[i].content) >= min_chars:
+            i += 1
+            continue
+
+        if i + 1 < len(result) and (
+            len(result[i].content) + len(result[i + 1].content) <= chunk_size
+        ):
+            earlier, later = result[i], result[i + 1]
+            result[i] = _Piece(
+                heading_path=earlier.heading_path,
+                content=earlier.content + "\n\n" + later.content,
+                has_table=earlier.has_table or later.has_table,
+                has_code=earlier.has_code or later.has_code,
+            )
+            del result[i + 1]
+            continue
+
+        if i > 0 and (
+            len(result[i - 1].content) + len(result[i].content) <= chunk_size
+        ):
+            earlier, later = result[i - 1], result[i]
+            result[i - 1] = _Piece(
+                heading_path=earlier.heading_path,
+                content=earlier.content + "\n\n" + later.content,
+                has_table=earlier.has_table or later.has_table,
+                has_code=earlier.has_code or later.has_code,
+            )
+            del result[i]
+            i -= 1
+            continue
+
+        i += 1
+
+    return result
+
+
 def _group_text(group: list[_Block], lines: list[str]) -> str:
     """拼接一组块对应的原文行。
 
@@ -190,19 +299,21 @@ def chunk_markdown_structured(
     text: str,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
+    min_chars: int | None = None,
 ) -> list[StructuredChunk]:
     if not text or not text.strip():
         return []
 
     chunk_size_val = chunk_size if chunk_size is not None else settings.chunk_size
     chunk_overlap_val = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
+    min_chars_val = min_chars if min_chars is not None else settings.chunk_min_chars
 
     tokens = _MD.parse(text)
     lines = text.splitlines(keepends=True)
     sections = _build_sections(lines, tokens)
     all_blocks = _top_level_blocks(tokens)
 
-    chunks: list[StructuredChunk] = []
+    all_pieces: list[_Piece] = []
 
     for heading_path, start_line, end_line in sections:
         section_text = "".join(lines[start_line:end_line]).strip()
@@ -223,7 +334,9 @@ def chunk_markdown_structured(
             # 之间也要 overlap" in the markdown-chunker-overlap design doc.
             prev_group: list[_Block] | None = None
             prev_text: str | None = None
-            for group in _pack_blocks(section_blocks, lines, chunk_size_val):
+            packed_groups = _pack_blocks(section_blocks, lines, chunk_size_val)
+            packed_groups = _merge_small_groups(packed_groups, lines, chunk_size_val, min_chars_val)
+            for group in packed_groups:
                 group_text = _group_text(group, lines)
                 has_table = any(b.kind == "table" for b in group)
                 has_code = any(b.kind == "code" for b in group)
@@ -254,16 +367,22 @@ def chunk_markdown_structured(
 
         for i, (content, has_table, has_code) in enumerate(pieces):
             path = heading_path if i == 0 else f"{heading_path} #{i + 1}"
-            chunks.append(
-                StructuredChunk(
-                    chunk_id=len(chunks),
-                    heading_path=path,
-                    has_table=has_table,
-                    has_code_block=has_code,
-                    char_count=len(content),
-                    token_estimate=round(len(content) / 1.8),
-                    content=content,
-                )
+            all_pieces.append(_Piece(path, content, has_table, has_code))
+
+    all_pieces = _merge_small_pieces_across_sections(all_pieces, chunk_size_val, min_chars_val)
+
+    chunks: list[StructuredChunk] = []
+    for piece in all_pieces:
+        chunks.append(
+            StructuredChunk(
+                chunk_id=len(chunks),
+                heading_path=piece.heading_path,
+                has_table=piece.has_table,
+                has_code_block=piece.has_code,
+                char_count=len(piece.content),
+                token_estimate=round(len(piece.content) / 1.8),
+                content=piece.content,
             )
+        )
 
     return chunks
