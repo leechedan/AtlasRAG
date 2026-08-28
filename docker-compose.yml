@@ -83,6 +83,7 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      RERANKER_ENABLED: false
     volumes:
       - ./data:/srv/data
       - ${HOME}/.cache/huggingface:/hf_cache

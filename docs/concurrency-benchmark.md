@@ -202,7 +202,8 @@ fast tokenizer 在被 2 个线程同时调用时本身就不是线程安全的**
 3. **`reranker_candidate_k` 从 30 降到 10 是目前验证过、性价比最高的
    改动**：2.5 倍吞吐提升，一行配置 + 重新构建镜像即可，代价是候选池
    变小可能略微牺牲召回（需要跟 `app/eval` 的检索质量评估配合，确认
-   没有明显掉分）。
+   没有明显掉分）。换更小的 rerank 模型是下一个未验证的杠杆，候选和
+   验证清单见 `docs/reranker-model-options.md`（尚未实测）。
 4. **`reranker_max_concurrency>=2` 时 HF fast tokenizer 并发调用不安全，
    会随机产生 500**——这是一个需要修的正确性 bug，优先级高于吞吐优化。
    **已修复**：`app/models/reranker.py` 把 `threading.Semaphore(reranker_max_concurrency)`
