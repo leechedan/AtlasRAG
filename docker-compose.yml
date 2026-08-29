@@ -62,7 +62,19 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000
+    # --workers: each worker is a separate process with its own GIL, its own
+    # @lru_cache model singletons and its own inference locks. A single
+    # process is capped at ~65 RPS on /search/text with rerank off -- not by
+    # GPU or by the embed lock (both measured flat/idle), but by GIL convoy:
+    # torch releases the GIL during GPU work, other threads grab it to
+    # serialize 16.8KB JSON responses, and the lock-holding thread then waits
+    # out sys.setswitchinterval to resume, stretching the critical section
+    # itself. See docs/concurrency-benchmark.md 结果七 and
+    # docs/superpowers/specs/2026-08-29-api-worker-processes-design.md.
+    # uvicorn 0.32.1 spawns (not forks) workers -- verified in the installed
+    # uvicorn/_subprocess.py:17 `multiprocessing.get_context("spawn")` -- so
+    # there is no CUDA-after-fork hazard of the kind app/worker.py avoids.
+    command: uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-4}
     ports:
       - "8000:8000"
     environment:
@@ -83,7 +95,12 @@ services:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      RERANKER_ENABLED: false
+      RERANKER_ENABLED: ${RERANKER_ENABLED:-false}
+      # Consumed by the `command:` above, not by app/config.py. Each worker
+      # holds a full model set (~1.8GB with rerank off), so this trades
+      # memory for throughput; 4 was measured as the sweet spot on this
+      # 20-core host.
+      API_WORKERS: ${API_WORKERS:-4}
     volumes:
       - ./data:/srv/data
       - ${HOME}/.cache/huggingface:/hf_cache

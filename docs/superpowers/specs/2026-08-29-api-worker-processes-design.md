@@ -86,10 +86,14 @@ uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-4}
 
 ### 预期收益
 
-| 场景 | 现状 | 4 workers（预期） | 依据 |
+| 场景 | 现状 | 4 workers（预期） | 4 workers（实测） |
 |---|---|---|---|
-| rerank 关闭 | 26 RPS @ c=64 | **200~260 RPS** | 单进程完整 handler 65 RPS × 4；GPU/CPU 均有大量余量 |
-| rerank 打开 | 6.5 RPS | ~8~9 RPS | GPU 已 67~85%，只能榨出剩余 15~30% |
+| rerank 关闭 | 26 RPS @ c=64 | 200~260 RPS | **111.5 RPS**（预测偏高） |
+| rerank 打开 | 6.5 RPS | ~8~9 RPS | **7.2~7.4 RPS**（基本吻合） |
+
+预测依据：单进程完整 handler 65 RPS × 4；rerank 打开时 GPU 已 67~85%，
+只能榨出剩余余量。**rerank 关闭那一格的预测偏高约 2 倍**，原因见文末
+"实施结果"。
 
 ### 代价与风险
 
@@ -136,3 +140,38 @@ uvicorn app.api.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-4}
    4 worker 实际冷启动耗时（判断 `start_period: 120s` 是否仍然够用）。
 6. 两次结果作为「结果八」补进 `docs/concurrency-benchmark.md`，并更新
    结论摘要。
+
+## 实施结果（2026-08-29，已完成）
+
+改动已落地：`docker-compose.yml` 的 api `command` 加
+`--workers ${API_WORKERS:-4}`，`environment` 增加 `API_WORKERS`，并把
+`RERANKER_ENABLED` 一并改为 `${RERANKER_ENABLED:-false}` 便于压测切换。
+**应用代码零改动**，两把 `Lock` 原样保留。完整数据见
+`docs/concurrency-benchmark.md` 结果八。
+
+**达成**：
+- rerank 关闭峰值 **26.8 → 111.5 RPS（约 4.2 倍）**，GPU 利用率从个位数
+  涨到 90%——GIL 瓶颈确已消除。
+- 两种配置共 2940 个请求**零错误**，`RuntimeError: Already borrowed`
+  没有回归，验证了 spec 里"spawn 而非 fork + 进程内单例"的安全性论证。
+- 冷启动 14s，远小于 `start_period: 120s`，风险 2/3 未发生，无需调整。
+- worker 数扫描（2/4/8）确认 4 是拐点：8 个 worker 吞吐不再增长
+  （109.5 vs 111.5）却要 2.6 倍内存（14.5GB vs 5.5GB）。
+
+**未达成 / 判断失误**：rerank 关闭下预测 200~260 RPS，实测只有 111.5。
+预测是拿单进程 65 RPS 线性外推 ×4，隐含假设"GPU 还有余量"——这个假设
+错了。单进程时 GPU 平均只有个位数，看起来很闲，但那是**因为 GIL 让请求
+到不了 GPU**，不代表 GPU 有 4 倍余量。实际上单条 query 走的是 `batch=1`
+的 embed 调用，GPU 效率极低（batch=1 每条 11.57ms，batch=16 每条
+1.16ms），4 个进程各自发 `batch=1` kernel 很快就把 GPU **占满**，而
+占满 ≠ 算得多。
+
+教训：**从"某资源利用率低"推断"该资源有余量"是不成立的**，当存在上游
+串行瓶颈时利用率低恰恰是瓶颈的症状。正确做法是先解除上游瓶颈再测该
+资源的真实上限——这也正是结果七/结果八两步走验证出来的。
+
+**后续**：GPU 现在饱和在低效的 `batch=1` 调用上，因此本文档"已否决的
+方案"里的 **embed 微批合并需要重新评估**——当时否决理由是"收益会被
+GIL convoy 吃掉"，而该前提已不复存在。若最终决定生产开启 rerank，则
+应重新评估把 `API_WORKERS` 降回 1~2 以换回尾延迟（rerank 打开时
+4 worker 只换来 +12% 吞吐，却让 c=64 的 p95 从 7342ms 涨到 12134ms）。
