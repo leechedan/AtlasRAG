@@ -38,7 +38,7 @@
 ```
 app/ingest/markdown_chunker.py   # 新增：结构化切片核心逻辑
   StructuredChunk (dataclass)
-  chunk_markdown_structured(text, chunk_size=None, chunk_overlap=None) -> list[StructuredChunk]
+  chunk_markdown_structured(text, chunk_size=None, chunk_overlap=None, min_chars=None) -> list[StructuredChunk]
 
 app/eval/runner.py               # 改：新增 chunker 参数，支持 "structured"
 scripts/eval_chunk_quality.py    # 改：新增 --chunker CLI 参数
@@ -94,6 +94,16 @@ chunk，只有其子标题各自产出；一个 H2 如果既有自己的直属�
   上下文衔接。仍然不做重叠的只剩两种情况：上一个分组的最后一个块是受保
   护块（表格/代码，借用会截出半段没有意义），以及不同标题小节之间（新标
   题是真实的语义边界）。
+- 打包只保证不超过 `chunk_size` 上限，从不检查打包出的某个 group/直属内
+  容是否偏小，也不跨边界合并——真实语料里"标题多、每节天生只有一小段正
+  文"是主导的碎片化模式，这条规则的直接后果是产出大量远低于 `chunk_size`
+  的极短 chunk。**更新（见
+  `docs/superpowers/specs/2026-08-27-markdown-chunker-small-group-merge-design.md`）**：
+  新增 `min_chars` 参数和两层合并——`_merge_small_groups`（section 内，
+  合并未拆开的 group）、`_merge_small_pieces_across_sections`（跨 section，
+  按原文行区间重新切片，`heading_path` 取合并双方的最长公共前缀）。这两
+  层都发生在本节描述的打包/二次拆分逻辑**之后**，不改变上面这条核心算法
+  本身。
 
 ## Chunk 字段
 
@@ -164,9 +174,15 @@ class StructuredChunk:
 - 不接入生产摄取链路（`pipeline.py`/Qdrant/API/Admin UI）；如果后续要接入，
   需要给 `TextChunkRecord`/`ChunkOut` 加 `heading_path`/`has_table`/
   `has_code_block` 字段，并处理存量数据兼容。
+  **更新**：已接入——`.md` 文件见 `feat: wire structured chunker into
+  production ingestion for .md files`（存量数据按用户指示直接丢弃，未做迁
+  移）；PDF/docx/pptx/xlsx（经 MinerU 转 Markdown）见
+  `docs/superpowers/specs/2026-08-26-mineru-pdf-ingestion-design.md`。
+  `TextChunkRecord`/Qdrant payload/`ChunkOut` 均已加上这三个字段。
 - `retrieval_metrics` 的结构化切片 A/B 对比留作后续（需要真实 Qdrant 摄取
   + 标注集）。
-- 只覆盖 `.md`；`.txt`/`.csv`/PDF/图片 OCR 文本仍用旧 `chunk_text`。
+- 只覆盖 `.md`；`.txt`/`.csv`/图片 OCR 文本仍用旧 `chunk_text`。PDF 见上一
+  条更新，已经不在此列。
 - 含表格/代码块的 chunk 在 `content` 里会保留一个末尾换行符（`_group_text`
   对这类组只做 `lstrip()` 而不是 `.strip()`），这是刻意保留的，用来配合
   `app/eval/structure_metrics.detect_structure_violations` 的区域包含性
