@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from app.eval.structure_metrics import detect_structure_violations
@@ -490,3 +491,24 @@ def test_front_matter_merged_into_first_chapter_does_not_propagate_into_next_cha
     assert "AAAAAAAAAA" in chunks[0].content
     assert "BBBBBBBBBB" not in chunks[0].content
     assert "BBBBBBBBBB" in chunks[1].content
+
+
+REAL_GDSK_DOC = Path(__file__).resolve().parent / "fixtures" / "广东省考公务员.md"
+
+
+def test_real_gdsk_doc_never_mixes_two_top_level_chapters_in_one_chunk():
+    # 回归这次 brainstorming 发现的具体 bug：修复前，这份文档会产出把
+    # "## 一、公告发布规律"整节内容混进标题自己那个 chunk、以及把
+    # "### 学历与户籍"（属于"二"）和"## 三、报名规则"（完全独立的一章）
+    # 混进同一个 chunk 这两种跨章合并。用"任意一个 chunk 的正文里最多只
+    # 能出现一条 `## ` 顶层章节标题行"这条不变量兜底，不依赖具体章节数。
+    text = REAL_GDSK_DOC.read_text(encoding="utf-8")
+    chapter_heading_lines = re.findall(r"^## .+$", text, re.MULTILINE)
+    assert len(chapter_heading_lines) >= 2  # 前提检查：这份文档确实有多章
+
+    chunks = chunk_markdown_structured(text)
+    assert len(chunks) > 0
+
+    for chunk in chunks:
+        present = [line for line in chapter_heading_lines if line in chunk.content]
+        assert len(present) <= 1, (chunk.heading_path, present)
