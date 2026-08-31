@@ -506,14 +506,16 @@ REAL_GDSK_DOC = Path(__file__).resolve().parent / "fixtures" / "广东省考公�
 
 
 def test_real_gdsk_doc_never_mixes_two_top_level_chapters_in_one_chunk():
-    # 回归这次 brainstorming 发现的具体 bug：修复前，这份文档会产出把
-    # "## 一、公告发布规律"整节内容混进标题自己那个 chunk、以及把
-    # "### 学历与户籍"（属于"二"）和"## 三、报名规则"（完全独立的一章）
-    # 混进同一个 chunk 这两种跨章合并。
+    # 回归这次 brainstorming 发现的具体 bug：修复前，这份文档会产出一个
+    # chunk，正文里同时混进"### 学历与户籍"（属于"二、报考条件"）和
+    # "## 三、报名规则"（完全独立的一章）——跨越了两个不相关的顶层章节。
+    # （文档开头"## 一、公告发布规律"并入标题自己那个 chunk 是另一回事：
+    # 前言没有章归属，并入紧邻的第一章是按设计保留的行为，修复前后都一
+    # 样，不受本测试约束——见 chapter 0 从下面 touched 里被排除。）
     #
     # 不能用"chunk 正文里最多出现一条 `^## .+$` 顶层标题行"这条不变量：
-    # 上面第二种跨章合并里，被吞并的是三级子标题"### 学历与户籍"（正则
-    # 匹配不到，第三个字符是 `#` 不是空格），真正跨过的顶层章节标题只有
+    # 上面的跨章合并里，被吞并的是三级子标题"### 学历与户籍"（正则匹配
+    # 不到，第三个字符是 `#` 不是空格），真正跨过的顶层章节标题只有
     # "## 三、报名规则"这一条——字面上仍然"至多一条"，这条断言在修复前
     # 的代码上同样会通过。改成按源文行区间比对：chunk 内容实际覆盖了原文
     # 里哪些 `## ` 章，才是这次 bug 真正要防住的东西。
@@ -533,7 +535,7 @@ def test_real_gdsk_doc_never_mixes_two_top_level_chapters_in_one_chunk():
 
     for chunk in chunks:
         start = text.find(chunk.content)
-        assert start >= 0, chunk.heading_path       # 顺带守住"原文逐字"承诺
+        assert start >= 0, chunk.heading_path  # 顺带守住"原文逐字"承诺
         end = start + len(chunk.content)
         touched = {
             chapter_of_line[i]
