@@ -117,6 +117,12 @@ def do_stats():
     return response.json()
 
 
+def do_mineru_idle_status():
+    response = httpx.get(f"{API_BASE_URL}/health/mineru-idle", timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
 def do_list_documents():
     response = httpx.get(f"{API_BASE_URL}/documents", timeout=30)
     response.raise_for_status()
@@ -168,16 +174,21 @@ def do_list_jobs():
 
 
 def do_select_job(jobs_table, evt: gr.SelectData):
+    # 合并原来独立的「任务状态」查询 tab：点行除了记住 job_id（供删除按钮用），
+    # 顺带把该任务的完整状态（do_check_job，即 GET /jobs/{job_id}）也查出来
+    # 显示，不用再切到另一个 tab 手动输入 job_id 查一遍。
     row_index = evt.index[0]
-    return jobs_table[row_index][0]
+    job_id = jobs_table[row_index][0]
+    status = do_check_job(job_id)
+    return job_id, status
 
 
 def do_delete_job(job_id: str | None):
     if not job_id:
-        return "请先在任务记录列表中选择一行", gr.update(), gr.update()
+        return "请先在任务记录列表中选择一行", gr.update(), gr.update(), None
     response = httpx.delete(f"{API_BASE_URL}/jobs/{job_id}", timeout=30)
     response.raise_for_status()
-    return f"已删除任务记录 {job_id}", do_list_jobs(), None
+    return f"已删除任务记录 {job_id}", do_list_jobs(), None, None
 
 
 with gr.Blocks(title="检索服务管理界面") as demo:
@@ -229,16 +240,16 @@ with gr.Blocks(title="检索服务管理界面") as demo:
             dir_index_result,
         )
 
-    with gr.Tab("任务状态"):
-        job_id_input = gr.Textbox(label="Job ID")
-        job_check_button = gr.Button("查询")
-        job_status_output = gr.JSON(label="状态")
-        job_check_button.click(do_check_job, job_id_input, job_status_output)
-
     with gr.Tab("索引库状态"):
         stats_button = gr.Button("刷新")
         stats_output = gr.JSON(label="统计")
         stats_button.click(do_stats, None, stats_output)
+
+    with gr.Tab("MinerU 空闲状态"):
+        gr.Markdown("重启 mineru 服务前用来判断是否空闲——两个信号（在途请求计数器、距上次转换的时间）都显示空闲才建议重启。")
+        mineru_idle_button = gr.Button("检查")
+        mineru_idle_output = gr.JSON(label="空闲状态")
+        mineru_idle_button.click(do_mineru_idle_status, None, mineru_idle_output)
 
     with gr.Tab("文档管理"):
         refresh_docs_button = gr.Button("刷新文档列表")
@@ -269,14 +280,17 @@ with gr.Blocks(title="检索服务管理界面") as demo:
             headers=["job_id", "总数", "已处理", "成功数", "失败数"],
             type="array",
             interactive=False,
-            label="任务记录（点击一行选中，用下方按钮删除）",
+            label="任务记录（点击一行查看详情，用下方按钮删除）",
         )
         selected_job_id = gr.State(None)
+        job_detail_output = gr.JSON(label="任务详情")
         delete_job_button = gr.Button("删除所选任务记录")
         delete_job_result = gr.Textbox(label="删除结果")
         refresh_jobs_button.click(do_list_jobs, None, jobs_table)
-        jobs_table.select(do_select_job, jobs_table, selected_job_id)
-        delete_job_button.click(do_delete_job, selected_job_id, [delete_job_result, jobs_table, selected_job_id])
+        jobs_table.select(do_select_job, jobs_table, [selected_job_id, job_detail_output])
+        delete_job_button.click(
+            do_delete_job, selected_job_id, [delete_job_result, jobs_table, selected_job_id, job_detail_output]
+        )
         demo.load(do_list_jobs, None, jobs_table)
 
 
