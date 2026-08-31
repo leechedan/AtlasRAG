@@ -63,6 +63,13 @@ class _Piece:
     # 结果的 heading_path，就从这里而不是标题行开始切，免得同一个标题既
     # 出现在 heading_path 里又重复出现在正文开头。
     content_start_line: int | None = None
+    # 这个 piece 所属的"章"标识：section 最初产出 piece 时按章级别算一次
+    # （见 `_chapter_component`），合并时显式从两侧传递（见
+    # `_merge_two_pieces`），不能在合并之后重新从退化的 heading_path 计算
+    # ——否则"引言并入第一章"之后会重新算出 None，绕开 `_can_merge` 的边
+    # 界检查、继续传递合并进下一章。None 表示"还没归到任何章"（比如文档
+    # 开头的引言），不是"属于某个特殊的章"。
+    chapter_id: str | None = None
 
 
 def _heading_text(tokens: list, idx: int) -> str:
@@ -129,6 +136,41 @@ def _build_sections(lines: list[str], tokens: list) -> list[tuple[str, int, int,
         sections.append((heading_path, start, content_start, content_end))
 
     return sections
+
+
+def _detect_chapter_depth(sections: list[tuple[str, int, int, int]]) -> int | None:
+    """章级别自动探测：只跳过最多一层——包住全文的单一根标题（一般是唯一
+    的 H1）。不递归继续往下找分支：如果继续跳，遇到"全文只有一个 `##`
+    章、章内有多个 `###` 条款"这种单章多条的文档（比如公司章程），会把
+    条款层误判成章级别，导致同一章内的条款互相之间也被当成"跨章"拒绝合
+    并——这正是 markdown-chunker-small-group-merge 设计文档要覆盖的目标
+    场景，不能破坏。
+
+    用 heading_path 按 " > " 拆分后的分量下标当"树深度"，不用原始 Markdown
+    的 #/## 层级数字——heading_path 只由文档里实际出现过的标题拼成，就算
+    文档跳级用标题（H1 直接跳到 H3），分量下标依然正确对应嵌套深度。"""
+    paths = [
+        heading_path.split(" > ")
+        for heading_path, *_ in sections
+        if heading_path != NO_HEADING_PLACEHOLDER
+    ]
+    if not paths:
+        return None
+    root_texts = {p[0] for p in paths}
+    if len(root_texts) == 1 and any(len(p) > 1 for p in paths):
+        return 2
+    return 1
+
+
+def _chapter_component(heading_path: str, chapter_depth: int | None) -> str | None:
+    """取 heading_path 在章级别那一层的分量，作为这个 piece 的章归属标识。
+    还没到章这一层（比如文档开头、标题自己的引言段）或者整份文档没有章级
+    别时返回 None——None 不代表"属于某个特殊的章"，而是"还没归到任何章"，
+    在 `_can_merge` 里和任何章都视为不冲突。"""
+    if chapter_depth is None or heading_path == NO_HEADING_PLACEHOLDER:
+        return None
+    parts = heading_path.split(" > ")
+    return parts[chapter_depth - 1] if len(parts) >= chapter_depth else None
 
 
 def _blocks_within(blocks: list[_Block], start_line: int, end_line: int) -> list[_Block]:
@@ -250,6 +292,7 @@ def _merge_two_pieces(earlier: _Piece, later: _Piece, lines: list[str]) -> _Piec
         # 到同一个 start，而不是继承较早那一节的正文起点（那会把它的标题
         # 行又切掉）。
         content_start_line=start,
+        chapter_id=earlier.chapter_id if earlier.chapter_id is not None else later.chapter_id,
     )
 
 
@@ -257,6 +300,12 @@ def _can_merge(earlier: _Piece, later: _Piece, lines: list[str], chunk_size: int
     if earlier.line_span is None or later.line_span is None:
         return False
     if not _common_heading_path(earlier.heading_path, later.heading_path):
+        return False
+    if (
+        earlier.chapter_id is not None
+        and later.chapter_id is not None
+        and earlier.chapter_id != later.chapter_id
+    ):
         return False
     return len(_merge_two_pieces(earlier, later, lines).content) <= chunk_size
 
@@ -379,6 +428,7 @@ def chunk_markdown_structured(
     lines = text.splitlines(keepends=True)
     sections = _build_sections(lines, tokens)
     all_blocks = _top_level_blocks(tokens)
+    chapter_depth = _detect_chapter_depth(sections)
 
     all_pieces: list[_Piece] = []
 
@@ -388,6 +438,7 @@ def chunk_markdown_structured(
             continue
 
         section_blocks = _blocks_within(all_blocks, start_line, end_line)
+        section_chapter_id = _chapter_component(heading_path, chapter_depth)
 
         pieces: list[tuple[str, bool, bool]] = []
         if not section_blocks:
@@ -439,7 +490,10 @@ def chunk_markdown_structured(
         body_start = start_line if len(pieces) == 1 else None
         for content, has_table, has_code in pieces:
             all_pieces.append(
-                _Piece(heading_path, content, has_table, has_code, span, body_start)
+                _Piece(
+                    heading_path, content, has_table, has_code, span, body_start,
+                    section_chapter_id,
+                )
             )
 
     all_pieces = _merge_small_pieces_across_sections(

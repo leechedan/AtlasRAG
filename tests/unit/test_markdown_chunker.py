@@ -70,19 +70,29 @@ def test_table_and_code_block_flags_set_and_content_preserved_verbatim():
     assert "```python" in section_b.content
 
 
-def test_hierarchy_doc_merges_into_common_ancestor_chunks_by_default():
-    # 默认配置下 Title 及其所有子节都远小于 chunk_min_chars，合并成一片，
-    # 面包屑退到共同祖先 Title；开头那段无标题正文和 Title 没有共同祖先，
-    # 保持独立。各级子标题作为原文行留在正文里，没有丢失。
+def test_hierarchy_doc_merges_within_chapter_but_not_across_chapters():
+    # 默认配置下 Title 自己的引言、Section A、Sub A1 都远小于 chunk_min_
+    # chars，合并成一片，面包屑退到共同祖先 Title；但 Section B 是另一个
+    # 顶层章节，不会被并进来——这正是本次修复要保证的边界。开头那段无标
+    # 题正文和 Title 没有共同祖先，保持独立。
     chunks = chunk_markdown_structured(HIERARCHY_MD)
 
-    assert [c.heading_path for c in chunks] == [NO_HEADING_PLACEHOLDER, "Title"]
+    assert [c.heading_path for c in chunks] == [
+        NO_HEADING_PLACEHOLDER,
+        "Title",
+        "Title > Section B",
+    ]
     merged = chunks[1]
     assert merged.content in HIERARCHY_MD
-    for heading in ("## Section A", "### Sub A1", "## Section B"):
+    for heading in ("## Section A", "### Sub A1"):
         assert heading in merged.content
-    assert merged.has_table is True
-    assert merged.has_code_block is True
+    assert "## Section B" not in merged.content
+    assert merged.has_table is False
+    assert merged.has_code_block is False
+
+    section_b = chunks[2]
+    assert section_b.has_table is True
+    assert section_b.has_code_block is True
 
 
 def test_char_count_and_token_estimate_match_content():
@@ -366,19 +376,26 @@ def test_split_section_pieces_do_not_participate_in_cross_section_merge():
 
 
 def test_repeated_heading_path_after_merging_gets_numeric_suffix():
-    # 合并后多个 chunk 的面包屑可能都退到同一个公共祖先，变成重名。沿用
-    # section 内拆分时就在用的 #n 约定把它们区分开。
+    # 两个"合并孤岛"都在同一章（Chapter）内、被中间偏大的 Big 隔开，各自
+    # 独立合并后面包屑都退到同一个章级祖先 "R > Chapter"，产生撞名——沿
+    # 用 section 内拆分时就在用的 #n 约定把它们区分开。两个孤岛都没有跨
+    # 过 Chapter 这个顶层章节边界，符合本次修复的约束。
     text = (
         "# R\n\n"
-        "r 的正文\n\n"
-        "## A\n\n" + ("a" * 30) + "\n\n"
-        "## B\n\n" + ("b" * 350) + "\n\n"
-        "## C\n\n" + ("c" * 30) + "\n\n"
-        "## D\n\n" + ("d" * 30) + "\n"
+        "## Chapter\n\n"
+        "### Sub1\n\n" + ("a" * 20) + "\n\n"
+        "### Sub2\n\n" + ("b" * 20) + "\n\n"
+        "### Big\n\n" + ("c" * 80) + "\n\n"
+        "### Sub3\n\n" + ("d" * 20) + "\n\n"
+        "### Sub4\n\n" + ("e" * 20) + "\n"
     )
-    chunks = chunk_markdown_structured(text, chunk_size=400, chunk_overlap=0, min_chars=200)
+    chunks = chunk_markdown_structured(text, chunk_size=100, chunk_overlap=0, min_chars=60)
 
-    assert [c.heading_path for c in chunks] == ["R", "R > B", "R #2"]
+    assert [c.heading_path for c in chunks] == [
+        "R > Chapter",
+        "R > Chapter > Big",
+        "R > Chapter #2",
+    ]
 
 
 def test_every_chunk_of_real_doc_is_a_verbatim_substring_of_the_source():
@@ -416,3 +433,60 @@ def test_real_exam_prep_doc_splits_cleanly_with_no_structure_violations():
     total_content_chars = sum(c.char_count for c in chunks)
     assert total_content_chars > 0
     assert total_content_chars <= len(text)
+
+
+def test_cross_top_level_chapter_merge_is_refused_even_with_shared_root_heading():
+    # 核心 bug 复现：唯一 H1 包住全文，"二"的子节和"三"这个完全不相关的
+    # 顶层章节之间，旧逻辑会因为共享 H1 这个公共前缀而错误地合并。
+    text = (
+        "# Root\n\n"
+        "## 二\n\n"
+        "### 学历\n\n" + ("x" * 50) + "\n\n"
+        "## 三\n\n" + ("y" * 50) + "\n"
+    )
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0, min_chars=200)
+
+    assert [c.heading_path for c in chunks] == ["Root > 二 > 学历", "Root > 三"]
+
+
+def test_same_chapter_sibling_subsections_merge_but_not_into_next_chapter():
+    # 同一章"二"下的两个子节应该照常合并（不能被新约束误伤），但合并结果
+    # 不能继续吞并紧邻的"三"这个不同顶层章节。
+    text = (
+        "# Root\n\n"
+        "## 二\n\n"
+        "### 学历\n\n" + ("x" * 50) + "\n\n"
+        "### 户籍\n\n" + ("y" * 50) + "\n\n"
+        "## 三\n\n" + ("z" * 50) + "\n"
+    )
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0, min_chars=200)
+
+    assert [c.heading_path for c in chunks] == ["Root > 二", "Root > 三"]
+
+
+def test_no_single_wrapping_root_still_merges_within_same_top_level_chapter():
+    # 没有包住全文的单一 H1（两个并列 H1 各自成章）时，章级别应该直接落在
+    # 第一层，而不是继续往下找；每章内部的子节合并不受影响。
+    text = (
+        "# 第一章\n\n"
+        "### 子节甲\n\n" + ("a" * 50) + "\n\n"
+        "### 子节乙\n\n" + ("b" * 50) + "\n\n"
+        "# 第二章\n\n" + ("c" * 50) + "\n"
+    )
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0, min_chars=200)
+
+    assert [c.heading_path for c in chunks] == ["第一章", "第二章"]
+
+
+def test_front_matter_merged_into_first_chapter_does_not_propagate_into_next_chapter():
+    # 防止"章分量从合并后的 heading_path 重新计算"这个漏洞：文档开头的
+    # 引言（没有章归属）先合法地并入第一章 A，但这一步之后不能把 chapter_id
+    # 错误地重置回 None，导致继续吞并完全不相关的第二章 B。
+    text = "# Root\n\nfront matter\n\n## A\n\nAAAAAAAAAA\n\n## B\n\nBBBBBBBBBB\n"
+    chunks = chunk_markdown_structured(text, chunk_size=1000, chunk_overlap=0, min_chars=1000)
+
+    assert [c.heading_path for c in chunks] == ["Root", "Root > B"]
+    assert "front matter" in chunks[0].content
+    assert "AAAAAAAAAA" in chunks[0].content
+    assert "BBBBBBBBBB" not in chunks[0].content
+    assert "BBBBBBBBBB" in chunks[1].content
