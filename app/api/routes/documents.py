@@ -1,12 +1,16 @@
+import io
+import tempfile
 import uuid
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app.api.deps import get_store_client
 from app.api.schemas import ChunkOut, DeleteResponse, DocumentSummaryOut, UploadResponse
 from app.config import settings
+from app.ingest.convert import IMAGES_SUBDIR, SUPPORTED_CONVERT_EXTS, convert_file_to_markdown
 from app.ingest.hashing import upload_source_ref
 from app.jobs.queue import get_queue
 from app.jobs.status import create_job_status
@@ -77,6 +81,122 @@ async def upload_document(
         job_timeout=3600,
     )
     return UploadResponse(job_id=job.id)
+
+
+@router.post("/documents/convert-to-markdown")
+def convert_document_to_markdown(file: UploadFile = File(...)):
+    """Synchronous document -> Markdown conversion: parse the uploaded file
+    with the same parser `POST /documents/upload` would use for its
+    extension (see app.ingest.convert), but return the whole document as
+    one Markdown string instead of chunking/embedding/writing it to
+    Qdrant. No job is enqueued and no doc_id is minted -- the response
+    body *is* the result.
+
+    Any images the document embeds (PDF/docx/pptx/xlsx figures via MinerU,
+    or the file itself for a standalone image upload) are referenced from
+    the Markdown as relative paths ("images/<filename>", matching
+    MinerU's own convention) rather than inlined -- an ordinary
+    filesystem-based Markdown reader (VS Code, Typora, Obsidian, ...) only
+    renders those once the referenced files actually exist next to the
+    .md on disk, so they're persisted under settings.converted_images_dir
+    keyed by a convert_id, fetchable as one archive via GET
+    /documents/convert-to-markdown/{convert_id}/images.zip
+    (download_converted_images below) -- unzipping it next to the saved
+    .md file reproduces the "images/" layout the Markdown expects. That
+    zip URL is exposed both as the `X-Images-Zip-Url` response header
+    *and* as a leading HTML comment in the Markdown body itself -- a
+    header alone is easy to miss for a caller that just saves/reads the
+    plain-text body (e.g. `curl -o out.md`), and an HTML comment renders
+    invisibly in any Markdown viewer while still being visible in the raw
+    text every caller already has.
+
+    Defined as a plain `def` (not `async def`) so Starlette runs it in its
+    threadpool (see starlette.routing: a sync endpoint is dispatched via
+    `run_in_threadpool`), keeping the blocking `httpx.post` inside
+    parse_pdf_to_markdown (used for pdf/docx/pptx/xlsx, see
+    app.ingest.parsers.pdf_parser) from stalling this worker's asyncio
+    event loop for however long MinerU takes.
+    """
+    safe_filename = Path(file.filename).name
+    ext = Path(safe_filename).suffix.lower()
+    if ext not in SUPPORTED_CONVERT_EXTS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported file extension: {ext!r}; supported: {sorted(SUPPORTED_CONVERT_EXTS)}",
+        )
+
+    # `file.file` (the underlying SpooledTemporaryFile) rather than
+    # `await file.read()` -- this route is a sync `def`, so there is no
+    # event loop here to await on.
+    content = file.file.read()
+
+    # A scratch dir, not settings.uploads_dir: this conversion is not an
+    # ingest, so the *uploaded source file* is never persisted, unlike
+    # /documents/upload's dest_path which deliberately stays around for
+    # the ingest job to read. Only the converted output (Markdown text +
+    # any extracted images, both built from this input, not the input
+    # itself) is kept.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dest_path = Path(tmpdir) / safe_filename
+        dest_path.write_bytes(content)
+        try:
+            converted = convert_file_to_markdown(dest_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            # parse_pdf_to_markdown raises RuntimeError for a MinerU-side
+            # failure (non-200, empty markdown) -- that's an upstream
+            # dependency failure, not a bad request from this caller.
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    convert_id = uuid.uuid4().hex
+    headers = {
+        "Content-Disposition": f'inline; filename="{Path(safe_filename).stem}.md"',
+        "X-Convert-Id": convert_id,
+    }
+    markdown_text = converted.markdown_text
+    if converted.images:
+        images_dir = settings.converted_images_dir / convert_id
+        images_dir.mkdir(parents=True, exist_ok=True)
+        for img in converted.images:
+            img.image.convert("RGB").save(images_dir / img.filename, "JPEG")
+        zip_url = f"/documents/convert-to-markdown/{convert_id}/images.zip"
+        headers["X-Images-Zip-Url"] = zip_url
+        # A response header alone is easy to miss -- most callers of a
+        # "plain Markdown body" endpoint just save/read the body and never
+        # look at headers (e.g. `curl -o out.md`, pasting the body
+        # somewhere). An HTML comment is invisible when the Markdown is
+        # rendered but still right there in the raw text every caller
+        # already has, so the zip URL is discoverable without requiring
+        # header access.
+        markdown_text = f"<!-- images zip: {zip_url} (convert_id: {convert_id}) -->\n{markdown_text}"
+
+    return Response(content=markdown_text, media_type="text/markdown; charset=utf-8", headers=headers)
+
+
+@router.get("/documents/convert-to-markdown/{convert_id}/images.zip")
+def download_converted_images(convert_id: str):
+    """Batch download for the images referenced by a prior
+    POST /documents/convert-to-markdown response (its `X-Convert-Id`).
+    Returns a zip with each image under "images/<filename>" -- extracting
+    it next to the saved .md reproduces the relative paths that Markdown
+    already references, so a plain filesystem-based Markdown reader shows
+    the images with no further edits."""
+    images_dir = settings.converted_images_dir / convert_id
+    if not images_dir.is_dir():
+        raise HTTPException(status_code=404, detail="unknown convert_id or it had no images")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for image_path in sorted(images_dir.iterdir()):
+            zf.write(image_path, arcname=f"{IMAGES_SUBDIR}/{image_path.name}")
+    buf.seek(0)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{convert_id}-images.zip"'},
+    )
 
 
 @router.get("/documents", response_model=list[DocumentSummaryOut])

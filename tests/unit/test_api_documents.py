@@ -1,4 +1,5 @@
 import io
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +10,7 @@ from rq import Queue
 
 from app.api.deps import get_store_client
 from app.api.main import app
+from app.config import settings
 from app.jobs.status import get_job_status
 
 
@@ -329,3 +331,96 @@ def test_get_document_chunks_404_when_document_missing(monkeypatch):
     app.dependency_overrides.clear()
 
     assert response.status_code == 404
+
+
+def test_convert_to_markdown_returns_text_body_directly():
+    client = TestClient(app)
+    response = client.post(
+        "/documents/convert-to-markdown",
+        files={"file": ("note.txt", io.BytesIO("纯文本内容".encode("utf-8")), "text/plain")},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert response.headers["content-disposition"] == 'inline; filename="note.md"'
+    assert response.text == "纯文本内容"
+    assert response.headers["x-convert-id"]
+    # A text file has no images -- no zip to advertise.
+    assert "x-images-zip-url" not in response.headers
+
+
+def test_convert_to_markdown_rejects_unsupported_extension():
+    client = TestClient(app)
+    response = client.post(
+        "/documents/convert-to-markdown",
+        files={"file": ("archive.zip", io.BytesIO(b"PK\x03\x04"), "application/zip")},
+    )
+
+    assert response.status_code == 415
+    assert ".zip" in response.json()["detail"]
+
+
+@patch("app.api.routes.documents.convert_file_to_markdown")
+def test_convert_to_markdown_maps_mineru_runtime_error_to_502(mock_convert):
+    mock_convert.side_effect = RuntimeError("mineru-api failed for input.pdf (status 500): boom")
+
+    client = TestClient(app)
+    response = client.post(
+        "/documents/convert-to-markdown",
+        files={"file": ("input.pdf", io.BytesIO(b"%PDF-1.4 fake"), "application/pdf")},
+    )
+
+    assert response.status_code == 502
+    assert "mineru-api failed" in response.json()["detail"]
+
+
+@patch("app.ingest.convert.run_ocr", return_value="")
+def test_convert_to_markdown_with_image_exposes_batch_zip_download(mock_run_ocr):
+    client = TestClient(app)
+    img_buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color="green").save(img_buf, "PNG")
+    img_buf.seek(0)
+
+    convert_response = client.post(
+        "/documents/convert-to-markdown", files={"file": ("photo.png", img_buf, "image/png")}
+    )
+
+    assert convert_response.status_code == 200
+    assert "images/photo.png" in convert_response.text
+    convert_id = convert_response.headers["x-convert-id"]
+    zip_url = convert_response.headers["x-images-zip-url"]
+    assert zip_url == f"/documents/convert-to-markdown/{convert_id}/images.zip"
+    # Also discoverable from the body alone (not just headers), for a
+    # caller that only saves/reads the plain-text response.
+    assert convert_response.text.startswith(f"<!-- images zip: {zip_url}")
+
+    zip_response = client.get(zip_url)
+    assert zip_response.status_code == 200
+    assert zip_response.headers["content-type"] == "application/zip"
+
+    with zipfile.ZipFile(io.BytesIO(zip_response.content)) as zf:
+        assert zf.namelist() == ["images/photo.png"]
+
+
+def test_download_converted_images_404_for_unknown_convert_id():
+    client = TestClient(app)
+    response = client.get("/documents/convert-to-markdown/does-not-exist/images.zip")
+    assert response.status_code == 404
+
+
+def test_convert_to_markdown_does_not_persist_upload():
+    # Distinguishing feature from /documents/upload: nothing should land
+    # under settings.uploads_dir for this endpoint (Design: "不落盘持久化
+    # 上传文件"). uploads_dir is a computed property (no setter to
+    # monkeypatch), so this snapshots its real contents before/after
+    # instead of redirecting it.
+    before = set(settings.uploads_dir.rglob("*"))
+
+    client = TestClient(app)
+    response = client.post(
+        "/documents/convert-to-markdown",
+        files={"file": ("note.md", io.BytesIO(b"hello"), "text/markdown")},
+    )
+
+    assert response.status_code == 200
+    assert set(settings.uploads_dir.rglob("*")) == before

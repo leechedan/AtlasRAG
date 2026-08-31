@@ -41,6 +41,18 @@ class Settings(BaseSettings):
         return self.data_dir / "extracted_images"
 
     @property
+    def converted_images_dir(self) -> Path:
+        # Images extracted by POST /documents/convert-to-markdown, one
+        # subdirectory per convert_id (app.ingest.convert), so they can be
+        # fetched back as a batch via GET
+        # /documents/convert-to-markdown/{convert_id}/images.zip -- kept
+        # separate from extracted_images_dir (which holds images belonging
+        # to *indexed* documents, cleaned up via delete_document) since
+        # converted images belong to no doc_id and nothing deletes them on
+        # a schedule.
+        return self.data_dir / "converted_images"
+
+    @property
     def effective_allowed_index_roots(self) -> list[Path]:
         """Directory roots POST /directories/index is allowed to index
         under (Important Finding I11). This service is explicitly no-auth
@@ -57,3 +69,4 @@ settings = Settings()
 settings.uploads_dir.mkdir(parents=True, exist_ok=True)
 settings.thumbnails_dir.mkdir(parents=True, exist_ok=True)
 settings.extracted_images_dir.mkdir(parents=True, exist_ok=True)
+settings.converted_images_dir.mkdir(parents=True, exist_ok=True)

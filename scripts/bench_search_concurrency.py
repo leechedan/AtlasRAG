@@ -5,7 +5,7 @@
 用法:
     python scripts/bench_search_concurrency.py
     python scripts/bench_search_concurrency.py --url http://localhost:8000/search/text \\
-        --levels 1,2,4,8,16,32,64 --requests-per-level 40 --query "检索服务的并发能力"
+        --levels 1,2,4,6,8,16,32 --requests-per-level 40 --query "检索服务的并发能力"
 """
 import argparse
 import asyncio
@@ -146,7 +146,7 @@ async def run_level(url: str, payload: dict, concurrency: int, n: int) -> dict:
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="/search/text 并发压测工具")
-    parser.add_argument("--url", default="http://localhost:8000/search/text")
+    parser.add_argument("--url", default="http://10.86.92.19:8000/search/text")
     parser.add_argument("--query", default="检索服务的并发能力")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--modalities", default="text", help="逗号分隔，如 text,image")

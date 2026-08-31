@@ -100,7 +100,7 @@ services:
       # holds a full model set (~1.8GB with rerank off), so this trades
       # memory for throughput; 4 was measured as the sweet spot on this
       # 20-core host.
-      API_WORKERS: ${API_WORKERS:-4}
+      API_WORKERS: ${API_WORKERS:-1}
     volumes:
       - ./data:/srv/data
       - ${HOME}/.cache/huggingface:/hf_cache
@@ -181,7 +181,7 @@ services:
       context: .
       dockerfile: admin_ui/Dockerfile
     ports:
-      - "7860:7860"
+      - "27860:7860"
     environment:
       API_BASE_URL: http://api:8000
     depends_on:
