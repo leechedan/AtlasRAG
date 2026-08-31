@@ -1,8 +1,14 @@
-import re
+import itertools
 from pathlib import Path
 
 from app.eval.structure_metrics import detect_structure_violations
-from app.ingest.markdown_chunker import NO_HEADING_PLACEHOLDER, chunk_markdown_structured
+from app.ingest.markdown_chunker import (
+    NO_HEADING_PLACEHOLDER,
+    _MD,
+    _build_sections,
+    _detect_chapter_depth,
+    chunk_markdown_structured,
+)
 
 HIERARCHY_MD = (
     "leading text before any heading\n"
@@ -478,6 +484,9 @@ def test_no_single_wrapping_root_still_merges_within_same_top_level_chapter():
 
     assert [c.heading_path for c in chunks] == ["第一章", "第二章"]
 
+    sections = _build_sections(text.splitlines(keepends=True), _MD.parse(text))
+    assert _detect_chapter_depth(sections) == 1
+
 
 def test_front_matter_merged_into_first_chapter_does_not_propagate_into_next_chapter():
     # 防止"章分量从合并后的 heading_path 重新计算"这个漏洞：文档开头的
@@ -500,15 +509,35 @@ def test_real_gdsk_doc_never_mixes_two_top_level_chapters_in_one_chunk():
     # 回归这次 brainstorming 发现的具体 bug：修复前，这份文档会产出把
     # "## 一、公告发布规律"整节内容混进标题自己那个 chunk、以及把
     # "### 学历与户籍"（属于"二"）和"## 三、报名规则"（完全独立的一章）
-    # 混进同一个 chunk 这两种跨章合并。用"任意一个 chunk 的正文里最多只
-    # 能出现一条 `## ` 顶层章节标题行"这条不变量兜底，不依赖具体章节数。
+    # 混进同一个 chunk 这两种跨章合并。
+    #
+    # 不能用"chunk 正文里最多出现一条 `^## .+$` 顶层标题行"这条不变量：
+    # 上面第二种跨章合并里，被吞并的是三级子标题"### 学历与户籍"（正则
+    # 匹配不到，第三个字符是 `#` 不是空格），真正跨过的顶层章节标题只有
+    # "## 三、报名规则"这一条——字面上仍然"至多一条"，这条断言在修复前
+    # 的代码上同样会通过。改成按源文行区间比对：chunk 内容实际覆盖了原文
+    # 里哪些 `## ` 章，才是这次 bug 真正要防住的东西。
     text = REAL_GDSK_DOC.read_text(encoding="utf-8")
-    chapter_heading_lines = re.findall(r"^## .+$", text, re.MULTILINE)
-    assert len(chapter_heading_lines) >= 2  # 前提检查：这份文档确实有多章
+    lines = text.splitlines(keepends=True)
+    # 每一行归属哪个 `## ` 章（0 = 第一章之前的文档级引言，不算章）
+    chapter_of_line, chapter_count = [], 0
+    for line in lines:
+        if line.startswith("## "):
+            chapter_count += 1
+        chapter_of_line.append(chapter_count)
+    assert chapter_count >= 2  # 前提检查：这份文档确实有多章
+    offsets = list(itertools.accumulate((len(line) for line in lines), initial=0))
 
     chunks = chunk_markdown_structured(text)
     assert len(chunks) > 0
 
     for chunk in chunks:
-        present = [line for line in chapter_heading_lines if line in chunk.content]
-        assert len(present) <= 1, (chunk.heading_path, present)
+        start = text.find(chunk.content)
+        assert start >= 0, chunk.heading_path       # 顺带守住"原文逐字"承诺
+        end = start + len(chunk.content)
+        touched = {
+            chapter_of_line[i]
+            for i in range(len(lines))
+            if offsets[i] < end and offsets[i + 1] > start and lines[i].strip()
+        } - {0}
+        assert len(touched) <= 1, (chunk.heading_path, sorted(touched))

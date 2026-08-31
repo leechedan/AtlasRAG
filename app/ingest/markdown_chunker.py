@@ -318,7 +318,7 @@ def _merge_small_pieces_across_sections(
     天生就只有一小段正文，section 内根本没有相邻小块可合并。这一轮在整个
     文档的最终 piece 序列上再扫一遍，把小 piece 并入相邻 section。
 
-    三条约束，缺一不可：
+    四条约束，缺一不可：
 
     1. 两边都必须是"整节恰好产出一个 piece"（`line_span` 不为 None）。被
        chunk_size 拆开的 piece 不对应完整的原文行区间，没法重新切片。
@@ -327,6 +327,11 @@ def _merge_small_pieces_across_sections(
        盖合并内容的前一部分，对后面几节就是指错地方的面包屑。
     3. 公共前缀为空（两节分属不同顶层章节）时**拒绝合并**：既找不到能覆
        盖全部内容的 heading_path，跨顶层章节本身也是语义边界。
+    4. 两边的 `chapter_id` 都不是 None 且不相等时**拒绝合并**：公共前缀
+       非空不代表同一章——唯一 H1 包住全文时任意两个 `##` 章都共享这个
+       H1 作为公共前缀，光看前缀判断不出真正的章边界。`chapter_id` 由
+       `_chapter_component` 按 `_detect_chapter_depth` 探测出的章级别算
+       出，是这道检查的依据。
 
     被跨过的各节标题不会丢失——它们作为原文行留在合并后的正文里（见
     `_merge_two_pieces`）。
@@ -491,8 +496,13 @@ def chunk_markdown_structured(
         for content, has_table, has_code in pieces:
             all_pieces.append(
                 _Piece(
-                    heading_path, content, has_table, has_code, span, body_start,
-                    section_chapter_id,
+                    heading_path=heading_path,
+                    content=content,
+                    has_table=has_table,
+                    has_code=has_code,
+                    line_span=span,
+                    content_start_line=body_start,
+                    chapter_id=section_chapter_id,
                 )
             )
 
