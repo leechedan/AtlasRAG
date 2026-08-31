@@ -56,22 +56,39 @@ H3），分量下标依然正确对应嵌套深度，不会因为跳级错位。
 
 ### 合并前置检查：章分量必须一致
 
-每个 `_Piece` 按 `chapter_depth` 取自己的"章分量"：`heading_path` 按
-`" > "` 拆分后取第 `chapter_depth` 个分量；路径分量数不够（还没到章这一
-层，比如文档开头、标题自己的引言段）就是 `None`。
+`_Piece` 新增一个字段 `chapter_id: str | None`，在每个 section 最初产出
+piece 时（合并发生之前）算一次：`heading_path` 按 `" > "` 拆分后取第
+`chapter_depth` 个分量；路径分量数不够（还没到章这一层，比如文档开头、
+标题自己的引言段）就是 `None`。
 
-`_can_merge` 新增一道检查：**两个 piece 的章分量都不是 `None`，且不相等
-→ 直接拒绝合并**。任一方是 `None`（前言性质的内容，还没有归到某一章）不
-算违反，可以正常并入紧邻的章节——这保留了"文档开头小段落自然并入第一章"
-的现有行为（这种情况不是跨章合并，是给没有章归属的前言找一个落脚点）。
+**不能在合并之后从 `heading_path` 现算**：合并结果的 `heading_path` 取
+的是两条路径的最长公共前缀，一旦"文档开头引言"（`chapter_id=None`）先
+并入了"第一章"，合并结果的 `heading_path` 会退回到引言自己的路径（比章
+级别浅），如果这时再从 `heading_path` 现算章分量，会重新算出 `None`——
+看上去这个已经吞并了第一章内容的 piece"还没归到任何章"，能继续往后并
+入第二章，跨章边界的漏洞又绕回来了。
+
+所以 `chapter_id` 必须在 `_merge_two_pieces` 里显式传递、而不是重新计
+算：合并结果取 `earlier.chapter_id`，`earlier.chapter_id` 是 `None`
+（说明 earlier 是无章归属的引言，真正的章归属看 later）就退而取
+`later.chapter_id`。
+
+`_can_merge` 新增一道检查：**两个 piece 的 `chapter_id` 都不是 `None`，
+且不相等 → 直接拒绝合并**。任一方是 `None`（前言性质的内容，还没有归到
+某一章）不算违反，可以正常并入紧邻的章节——这保留了"文档开头小段落自然
+并入第一章"的现有行为（这种情况不是跨章合并，是给没有章归属的前言找一
+个落脚点）。
 
 原有的"公共前缀是否为空"检查继续保留，两道检查都要通过才允许合并。
 
-`chapter_depth` 在 `chunk_markdown_structured()` 里、`sections` 算出来之
-后、调用 `_merge_small_pieces_across_sections` 之前算一次，作为参数往下
-传给 `_merge_small_pieces_across_sections` → `_can_merge`。`_merge_small_
-groups`（章节内部的 block 打包合并）不受影响，它本来就只在单个 section
-内部操作。
+`chapter_depth` 只在 `chunk_markdown_structured()` 里、`sections` 算出来
+之后算一次；它只在"给每个 section 最初产出的 piece 赋 `chapter_id`"这
+一处用到（每个 section 用自己的 `heading_path` 算一次 `chapter_id`，写
+进 `_Piece` 构造参数）。往后 `_merge_small_pieces_across_sections` →
+`_can_merge` → `_merge_two_pieces` 这条链路只读写已经算好的 `chapter_
+id` 字段，不需要再把 `chapter_depth` 继续往下传。`_merge_small_groups`
+（章节内部的 block 打包合并）不受影响，它本来就只在单个 section 内部操
+作，产出的 group 还没到"产出 piece"这一步。
 
 ### 修复后的预期效果（`广东省考公务员.md`）
 
@@ -99,6 +116,10 @@ groups`（章节内部的 block 打包合并）不受影响，它本来就只在
 4. **真实文档回归**：用 `data/uploads/.../广东省考公务员.md` 跑一遍
    `chunk_markdown_structured()`，断言不再出现"一个 chunk 的正文里包含
    自己 heading_path 章分量之外的 `## ` 标题行"这种跨章合并的信号。
+5. **前言吞并第一章后不能再传递合并进第二章**：文档开头引言（`chapter_
+   id=None`）先并入第一章（这一步合法），断言合并结果不会继续吞并第二
+   章——验证 `chapter_id` 是显式传递而不是从合并后的 `heading_path` 现
+   算，否则会把"退回引言路径"误判成"还没归到任何章"，绕开边界检查。
 
 原有的"原文可连续定位"、`truncated_regions == 0` 等不变量测试继续跑——
 这次改动只是在合并前新增一个拒绝条件，不改变切片本身的行为。
