@@ -3,6 +3,7 @@ import tempfile
 import uuid
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -150,8 +151,20 @@ def convert_document_to_markdown(file: UploadFile = File(...)):
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     convert_id = uuid.uuid4().hex
+    md_filename = f"{Path(safe_filename).stem}.md"
+    # Response headers must be latin-1 encodable (Starlette encodes them as
+    # such), but an uploaded filename is arbitrary Unicode (e.g. Chinese
+    # characters) -- encoding it straight into Content-Disposition raised
+    # UnicodeEncodeError for any non-latin-1 filename. RFC 6266 fixes this
+    # with a dual filename: a plain ASCII fallback for parsers that only
+    # understand `filename=`, plus RFC 5987 percent-encoded UTF-8 in
+    # `filename*=` for parsers that support the real name.
+    ascii_filename = md_filename.encode("ascii", "ignore").decode("ascii") or "converted.md"
+    encoded_filename = quote(md_filename)
     headers = {
-        "Content-Disposition": f'inline; filename="{Path(safe_filename).stem}.md"',
+        "Content-Disposition": (
+            f'inline; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+        ),
         "X-Convert-Id": convert_id,
     }
     markdown_text = converted.markdown_text

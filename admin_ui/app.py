@@ -1,5 +1,6 @@
 import io
 import os
+import tempfile
 
 import gradio as gr
 import httpx
@@ -117,6 +118,29 @@ def do_stats():
     return response.json()
 
 
+def do_convert_to_markdown(file_path: str):
+    with open(file_path, "rb") as f:
+        # timeout matches settings.mineru_timeout_seconds (600s, pdf/docx/pptx/xlsx
+        # route through MinerU synchronously here) plus a margin.
+        response = httpx.post(f"{API_BASE_URL}/documents/convert-to-markdown", files={"file": f}, timeout=650)
+    response.raise_for_status()
+    return response.text, response.headers.get("X-Images-Zip-Url")
+
+
+def do_download_converted_images(zip_url: str | None):
+    if not zip_url:
+        return None
+    # zip_url is the API-relative path from the X-Images-Zip-Url header; fetched
+    # through API_BASE_URL (container-internal) same as _fetch_thumbnail above,
+    # then handed to gr.File as a local path so the browser can download it --
+    # admin-ui has no volume mount onto the api container's disk.
+    response = httpx.get(f"{API_BASE_URL}{zip_url}", timeout=60)
+    response.raise_for_status()
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(response.content)
+        return tmp.name
+
+
 def do_mineru_idle_status():
     response = httpx.get(f"{API_BASE_URL}/health/mineru-idle", timeout=10)
     response.raise_for_status()
@@ -223,6 +247,20 @@ with gr.Blocks(title="检索服务管理界面") as demo:
             [upload_file, upload_chunk_size, upload_chunk_overlap, upload_separators],
             upload_result,
         )
+
+    with gr.Tab("文件转 Markdown"):
+        gr.Markdown(
+            "上传单个文件，同步转换为 Markdown 文本并直接返回（不入库、不生成任务）。"
+            "支持 txt/md/csv/jpg/png/docx/pptx/xlsx/pdf。含图片的文档可另外下载图片包。"
+        )
+        convert_file = gr.File(label="选择文件", type="filepath")
+        convert_button = gr.Button("转换")
+        convert_result = gr.Code(label="Markdown 结果", language="markdown", lines=20)
+        images_zip_url = gr.State(None)
+        download_images_button = gr.Button("下载图片包（如有）")
+        download_images_file = gr.File(label="图片包")
+        convert_button.click(do_convert_to_markdown, convert_file, [convert_result, images_zip_url])
+        download_images_button.click(do_download_converted_images, images_zip_url, download_images_file)
 
     with gr.Tab("目录入库"):
         dir_path_input = gr.Textbox(label="本地目录路径")
