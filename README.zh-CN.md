@@ -144,6 +144,8 @@ curl -X POST http://localhost:18000/search/text \
 
 更多分析见 [`docs/QA.md`](docs/QA.md)、[`docs/concurrency-benchmark.md`](docs/concurrency-benchmark.md)、[`docs/pdf-ingestion-performance.md`](docs/pdf-ingestion-performance.md) 与 [`docs/retrieval-relevance-filtering.md`](docs/retrieval-relevance-filtering.md)。
 
+分片质量、量化指标、运行命令及推荐的 A/B 评估流程见 [`docs/chunk-quality-evaluation.zh-CN.md`](docs/chunk-quality-evaluation.zh-CN.md)。英文版见 [`docs/chunk-quality-evaluation.md`](docs/chunk-quality-evaluation.md)。
+
 ## 项目结构
 
 ```text

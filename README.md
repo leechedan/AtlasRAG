@@ -146,6 +146,8 @@ See [`.env.example`](.env.example) for all settings.
 
 Further analysis: [`docs/QA.md`](docs/QA.md), [`docs/concurrency-benchmark.md`](docs/concurrency-benchmark.md), [`docs/pdf-ingestion-performance.md`](docs/pdf-ingestion-performance.md), and [`docs/retrieval-relevance-filtering.md`](docs/retrieval-relevance-filtering.md).
 
+Chunking quality, metrics, commands, and the recommended A/B evaluation protocol: [`docs/chunk-quality-evaluation.md`](docs/chunk-quality-evaluation.md). For Chinese, see [`docs/chunk-quality-evaluation.zh-CN.md`](docs/chunk-quality-evaluation.zh-CN.md).
+
 ## Repository layout
 
 ```text
